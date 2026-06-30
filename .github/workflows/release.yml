@@ -8,11 +8,18 @@ on:
       - '**/*.md'
 
 jobs:
-  release:
+  release-client:
     uses: AlienXAXS/StarRupture-Plugin-SDK/.github/workflows/plugin-release.yml@main
     with:
       plugin_name: WaveOptimiser_Plugin
       solution_file: WaveOptimiser_Plugin.sln
-      # variant: Client                     # omit for Client (default), set to Server if needed
-      # release_title: WaveOptimiser        # omit to use plugin_name as title
+      variant: Client
+    secrets: inherit
+
+  release-server:
+    uses: AlienXAXS/StarRupture-Plugin-SDK/.github/workflows/plugin-release.yml@main
+    with:
+      plugin_name: WaveOptimiser_Plugin
+      solution_file: WaveOptimiser_Plugin.sln
+      variant: Server
     secrets: inherit
