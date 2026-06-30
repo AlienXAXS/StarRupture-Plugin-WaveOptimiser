@@ -147,10 +147,11 @@ jobs:
       - name: Generate release assets
         shell: pwsh
         run: |
-          $tag  = "${{ steps.tag.outputs.TAG }}"
-          $repo = "${{ github.repository }}"
-          $ws   = $env:GITHUB_WORKSPACE
-          $name = "WaveOptimiser"
+          $tag     = "${{ steps.tag.outputs.TAG }}"
+          $repo    = "${{ github.repository }}"
+          $ws      = $env:GITHUB_WORKSPACE
+          $name    = "WaveOptimiser"
+          $dllName = "WaveOptimiser_Plugin"
 
           # Read interface version range from the checked-out Plugin SDK header.
           $header   = Get-Content "$ws\plugin-sdk\include\plugin_interface.h" -Raw
@@ -165,8 +166,8 @@ jobs:
           foreach ($variant in @("Client", "Server")) {
             $varLower = $variant.ToLower()
 
-            # Individual DLL
-            $dllSrc = "$ws\build\$variant Release\Plugins\$name.dll"
+            # Individual DLL (output filename uses dllName, release asset uses name)
+            $dllSrc = "$ws\build\$variant Release\Plugins\$dllName.dll"
             Copy-Item $dllSrc "$ws\$name-$variant.dll"
 
             # Per-plugin update manifest
@@ -189,11 +190,11 @@ jobs:
             # Plugin ZIP: Plugins\Name.dll + Plugins\Name.json
             $staging = "$ws\staging-$varLower\Plugins"
             New-Item -ItemType Directory -Force $staging | Out-Null
-            Copy-Item $dllSrc "$staging\$name.dll"
-            $sidecar | ConvertTo-Json -Depth 1 | Out-File "$staging\$name.json" -Encoding utf8NoBOM
+            Copy-Item $dllSrc "$staging\$dllName.dll"
+            $sidecar | ConvertTo-Json -Depth 1 | Out-File "$staging\$dllName.json" -Encoding utf8NoBOM
 
             $pdbSrc = [System.IO.Path]::ChangeExtension($dllSrc, ".pdb")
-            if (Test-Path $pdbSrc) { Copy-Item $pdbSrc "$staging\$name.pdb" }
+            if (Test-Path $pdbSrc) { Copy-Item $pdbSrc "$staging\$dllName.pdb" }
 
             Compress-Archive -Path "$ws\staging-$varLower\*" -DestinationPath "$ws\$name-$variant-$tag.zip"
             Write-Host "Created plugin ZIP: $name-$variant-$tag.zip"
