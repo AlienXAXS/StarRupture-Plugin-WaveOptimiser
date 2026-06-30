@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!-- ============================================================
+       Default paths for local development.
+       Override in CI via /p:GameSDKRoot=... /p:PluginSDKInclude=...
+       ============================================================ -->
+  <PropertyGroup>
+    <GameSDKRoot Condition="'$(GameSDKRoot)' == ''">..\..\StarRupture-Game-SDK</GameSDKRoot>
+    <PluginSDKInclude Condition="'$(PluginSDKInclude)' == ''">..\..\StarRupture-Plugin-SDK\include</PluginSDKInclude>
+  </PropertyGroup>
+
+  <!-- ============================================================
+       StarRuptureSDKSourceDir
+       Points to the SDK subdirectory containing Basic.cpp,
+       CoreUObject_functions.cpp and Engine_functions.cpp for the
+       active configuration.
+       ============================================================ -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release'">
+    <StarRuptureSDKSourceDir>$(GameSDKRoot)\Server\SDK\</StarRuptureSDKSourceDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
+    <StarRuptureSDKSourceDir>$(GameSDKRoot)\Client\SDK\</StarRuptureSDKSourceDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release' Or '$(Configuration)' == 'Local SDK Server Debug' Or '$(Configuration)' == 'Local SDK Server Release'">
+    <StarRuptureSDKSourceDir>$(GameSDKRoot)\Server\SDK\</StarRuptureSDKSourceDir>
+  </PropertyGroup>
+
+  <!-- ============================================================
+       StarRuptureSDKConfigDir
+       Additional include directories injected for Client/Server
+       builds. Includes both the top-level override headers and the
+       generated SDK sub-directory headers.
+       ============================================================ -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
+    <StarRuptureSDKConfigDir>$(GameSDKRoot)\Client\;$(GameSDKRoot)\Client\SDK\</StarRuptureSDKConfigDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release' Or '$(Configuration)' == 'Local SDK Server Debug' Or '$(Configuration)' == 'Local SDK Server Release'">
+    <StarRuptureSDKConfigDir>$(GameSDKRoot)\Server\;$(GameSDKRoot)\Server\SDK\</StarRuptureSDKConfigDir>
+  </PropertyGroup>
+
+  <!-- ============================================================
+       MODLOADER_CLIENT_BUILD / MODLOADER_SERVER_BUILD
+       Injected into PreprocessorDefinitions for all ClCompile items
+       so source files can use:
+         #if defined(MODLOADER_CLIENT_BUILD)   ...client-only code...
+         #elif defined(MODLOADER_SERVER_BUILD)  ...server-only code...
+         #else                                  ...generic fallback...
+         #endif
+       Legacy Debug / Release configurations get neither define,
+       matching the #else fallback documented in scan_patterns.h.
+       ============================================================ -->
+  <ItemDefinitionGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
+    <ClCompile>
+      <PreprocessorDefinitions>MODLOADER_CLIENT_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release' Or '$(Configuration)' == 'Local SDK Server Debug' Or '$(Configuration)' == 'Local SDK Server Release'">
+    <ClCompile>
+      <PreprocessorDefinitions>MODLOADER_SERVER_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <!-- ============================================================
+       MODLOADER_BUILD_TAG
+       Injected by CI via /p:ModLoaderBuildTag="vX.Y.Z".
+       Plugins embed this in PluginInfo.version so the auto-updater
+       can identify which build is installed.
+       Dev / local builds get no define -> fallback "dev" in plugin code.
+       ============================================================ -->
+  <ItemDefinitionGroup Condition="'$(ModLoaderBuildTag)' != ''">
+    <ClCompile>
+      <PreprocessorDefinitions>MODLOADER_BUILD_TAG="$(ModLoaderBuildTag)";%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <!-- ============================================================
+       AUTOUPDATE_MANIFEST_URL
+       Injected by CI per variant via /p:AutoUpdateManifestUrl="https://...".
+       Empty on dev builds -> auto-update disabled at runtime.
+       ============================================================ -->
+  <ItemDefinitionGroup Condition="'$(AutoUpdateManifestUrl)' != ''">
+    <ClCompile>
+      <PreprocessorDefinitions>AUTOUPDATE_MANIFEST_URL="$(AutoUpdateManifestUrl)";%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+</Project>
