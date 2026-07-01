@@ -6,17 +6,29 @@
 // Hand-rolled mirror of the engine's TSet<FMassEntityHandle, DefaultKeyFuncs<...>,
 // FDefaultSetAllocator> memory layout (confirmed against the decompiled
 // AddEntitiesToWave loop, which only ever reads Elements.AllocationFlags and
-// Elements.Data - the hash table fields are never touched). Building a batch
-// this way lets us hand the *real* original function a small TSet instead of
-// the huge one the game tried to pass, reusing 100% of its own per-entity
-// logic (IsEntityValid, AddTagsInternal command, SignalEntity, EntitiesInWave
-// append) untouched.
+// Elements.Data - the hash table fields are never touched there). Building a
+// batch this way lets us hand the *real* original function a small TSet
+// instead of the huge one the game tried to pass, reusing 100% of its own
+// per-entity logic (IsEntityValid, AddTagsInternal command, SignalEntity,
+// EntitiesInWave append) untouched.
 //
 // Layout mirrors:
 //   TSparseArray<TSetElement<T>>::Data           -> TArray<T> {Data, Num, Max}
 //   TSparseArray<TSetElement<T>>::AllocationFlags -> TBitArray<FDefaultBitArrayAllocator>
 //   TSparseArray<TSetElement<T>>::FirstFreeIndex / NumFreeIndices
-//   TSet::Hash / HashSize (unused by the loop - left zeroed)
+//   TSet::Hash / HashSize
+//
+// RemoveEntitiesFromWave (unlike AddEntitiesToWave) calls TSet::Difference(),
+// which performs real hash-bucket lookups (Contains()) against this set - a
+// zeroed HashSize there causes Hash & (HashSize - 1) to underflow to a huge
+// bucket index and crash reading garbage memory. AsScriptSet() below always
+// builds a single-bucket table (HashSize = 1), so the mask (HashSize - 1 == 0)
+// resolves every possible key to bucket 0 regardless of the real
+// GetTypeHash(FMassEntityHandle) implementation - Contains() then walks the
+// bucket's HashNextId chain comparing Index/SerialNumber directly, which is
+// correct by construction (just O(N) instead of O(1), fine for <=128
+// elements). This isn't a hack: HashSize == 1 is exactly what the engine's
+// own bucket-count formula already returns for any set this small.
 //
 // Capacity is capped at 128 entries so the bit array never needs to spill out
 // of its 4-DWORD inline allocation (TInlineAllocator<4> == 128 bits) - no
@@ -34,8 +46,8 @@ namespace MassEntitySet
     struct TSetElement
     {
         FMassEntityHandle Value;
-        int32_t HashNextId; // unused by AddEntitiesToWave's loop
-        int32_t HashIndex;  // unused by AddEntitiesToWave's loop
+        int32_t HashNextId; // FSetElementId of the next element in the same hash bucket, or -1 (INDEX_NONE)
+        int32_t HashIndex;  // which hash bucket this element is linked into (always 0 - see AsScriptSet())
     };
 
     // Mirrors TArray<T>: {T* Data; int32 Num; int32 Max;}
@@ -66,11 +78,12 @@ namespace MassEntitySet
     };
 
     // Mirrors TInlineAllocator<1>::ForElementType<int32> + int32 HashSize for the
-    // hash table tail of TSet. Never read by AddEntitiesToWave - zeroed only so
-    // the memory is well-defined.
+    // hash table tail of TSet. With HashSize == 1 (see AsScriptSet()), InlineWord
+    // is the head FSetElementId (sparse-array index, or -1/INDEX_NONE if empty)
+    // of the single bucket every element hashes into.
     struct HashTail
     {
-        uint32_t InlineWord;
+        int32_t InlineWord;
         uint32_t _pad;
         uint32_t* SecondaryData;
         int32_t HashSize;
@@ -132,6 +145,19 @@ namespace MassEntitySet
 
             m_set.Elements.FirstFreeIndex = -1;
             m_set.Elements.NumFreeIndices = 0;
+
+            // Single-bucket hash table - see the file-level comment on why this is
+            // correct (not just expedient) for TSet::Difference()/Contains() lookups
+            // performed against this set by the real engine function.
+            m_set.Hash.HashSize = 1;
+            if (m_count > 0)
+            {
+                m_set.Hash.InlineWord = 0; // bucket 0 head -> sparse index 0 (first packed element)
+                for (int i = 0; i < m_count; ++i)
+                    m_elements[i].HashNextId = (i + 1 < m_count) ? (i + 1) : -1; // INDEX_NONE terminates the chain
+            }
+            else
+                m_set.Hash.InlineWord = -1; // INDEX_NONE - empty bucket
 
             return &m_set;
         }

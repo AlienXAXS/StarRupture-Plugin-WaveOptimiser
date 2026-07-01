@@ -3,6 +3,7 @@
 #include "plugin_config.h"
 #include "wave_optimiser.h"
 #include "wave_optimiser_ui.h"
+#include "heat_sampler.h"
 
 // Global plugin self pointer — stable for the plugin's lifetime, retained from PluginInit
 static IPluginSelf* g_self = nullptr;
@@ -52,25 +53,29 @@ extern "C" {
 		// Initialize config system (optional - creates config file with defaults)
 		WaveOptimiserConfig::Config::Initialize(self);
 
-		// These always run regardless of enabled state - UI handles missing hooks
-		// gracefully, diagnostic hooks need to observe the unhooked code path.
+		// UI always runs regardless of enabled state - handles missing hooks gracefully.
 		WaveOptimiserUI::Init(self);
-		IsEntityValidDiag::Init(self);
-		AddTemperatureDiag::Init(self);
 
-		// Check if plugin is enabled via config
 		if (!WaveOptimiserConfig::Config::IsEnabled())
-		{
-			LOG_WARN("Plugin is disabled in config file - wave batching inactive, diagnostic hook only");
-			return true;
-		}
+			LOG_WARN("Plugin is disabled in config file - wave batching inactive (hooks run in passthrough mode)");
 
-		LOG_DEBUG("Config: MaxEntitiesPerTick=%d ShowDebugPanel=%s",
+		LOG_DEBUG("Config: Enabled=%s MaxEntitiesPerTick=%d ShowDebugPanel=%s",
+			WaveOptimiserConfig::Config::IsEnabled() ? "true" : "false",
 			WaveOptimiserConfig::Config::GetMaxEntitiesPerTick(),
 			WaveOptimiserConfig::Config::GetShowDebugPanel() ? "true" : "false");
 
+		// Hooks and HeatSampler are installed regardless of the enabled toggle -
+		// the detours themselves check Config::IsEnabled() per-call and pass
+		// straight through to the original engine functions when disabled (see
+		// wave_optimiser.cpp). That keeps the entity-manager/fragment-ptr
+		// resolution HeatSampler depends on alive even while batching is off, so
+		// the cursor sampler can still read ground-truth heat from the
+		// unmodified wave.
 		WaveOptimiser::Init(self);
 		self->hooks->Engine->RegisterOnTick(&WaveOptimiser::OnTick);
+
+		HeatSampler::Init(self);
+		self->hooks->Engine->RegisterOnTick(&HeatSampler::OnTick);
 
 		LOG_INFO("Plugin initialized successfully");
 
@@ -85,9 +90,9 @@ extern "C" {
 		{
 			WaveOptimiser::Shutdown(g_self);
 			g_self->hooks->Engine->UnregisterOnTick(&WaveOptimiser::OnTick);
+			HeatSampler::Shutdown();
+			g_self->hooks->Engine->UnregisterOnTick(&HeatSampler::OnTick);
 			WaveOptimiserUI::Shutdown(g_self);
-			IsEntityValidDiag::Shutdown(g_self);
-			AddTemperatureDiag::Shutdown(g_self);
 		}
 
 		g_self = nullptr;

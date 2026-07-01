@@ -1,6 +1,7 @@
 #pragma once
 
 #include "plugin_interface.h"
+#include "mass_entity_set.h"
 #include <cstdint>
 #include <cstddef>
 
@@ -27,29 +28,41 @@ namespace WaveOptimiser
     struct Stats
     {
         bool        hookInstalled;
-        size_t      queueDepth;        // entities currently waiting to be replayed
-        size_t      currentBurstTotal; // size of the in-progress capture burst (0 once drained)
-        uint64_t    totalCaptured;     // lifetime count of entities ever deferred
-        uint64_t    totalProcessed;    // lifetime count of entities replayed through the original fn
+        size_t      queueDepth;          // entities currently waiting to be replayed
+        size_t      currentBurstTotal;   // size of the in-progress capture burst (0 once drained)
+        uint64_t    totalCaptured;       // lifetime count of entities ever deferred
+        uint64_t    totalProcessed;      // lifetime count of entities replayed through the original fn
         uint64_t    totalBatchesReplayed;
         uint8_t     lastWaveType;
     };
 
     Stats GetStats();
-}
 
-// Temporary diagnostic hook — logs every UCrBuildingFunctionLibrary::AddTemperatureToEntity
-// call so we can confirm the value passed and whether our wave entities ever receive it.
-// Remove once the heat chain is understood.
-namespace IsEntityValidDiag
-{
-    bool  Init(IPluginSelf* self);
-    void  Shutdown(IPluginSelf* self);
-    void* GetEntityMgr();
-}
+    // Snapshot of the pointers needed to query FCrMassTemperatureFragment from outside
+    // this translation unit (e.g. HeatSampler). All fields are null until the first
+    // wave fires and g_cachedEntityMgr is resolved.
+    using FragDataFn = void*(*)(void* entityMgr, FMassEntityHandle handle, const void* structPtr);
+    struct HeatQueryContext
+    {
+        void*      entityMgr;     // FMassEntityManager*
+        FragDataFn getFragDataFn; // FMassEntityManager::InternalGetFragmentDataPtr
+        void*      tempStructPtr; // FCrMassTemperatureFragment UScriptStruct*
+    };
+    HeatQueryContext GetHeatQueryContext();
 
-namespace AddTemperatureDiag
-{
-    bool Init(IPluginSelf* self);
-    void Shutdown(IPluginSelf* self);
+    // Resolves FMassEntityManager* directly from a UWorld* (as an opaque void*),
+    // bypassing the g_cachedWaveSubsystem lazy-init path used by OnTick/GetHeatQueryContext.
+    // Available as soon as Init() has resolved GetSubsystem<UMassEntitySubsystem> -
+    // does not require a wave to have fired yet. Returns null if that scan failed
+    // or if massEntitySubsystem can't be reached for this world.
+    void* ResolveEntityManagerFromWorld(void* world);
+
+    // Checks whether a handle still refers to a live entity in the given entity
+    // manager. Call before any fragment/tag lookup on a handle that wasn't just
+    // freshly handed to us by AddEntitiesToWave (e.g. historical handles, or
+    // handles resolved from an arbitrary actor) - InternalGetFragmentDataPtr
+    // hard-asserts (crashes the game) on a stale/destroyed entity instead of
+    // failing softly. Fails closed: returns false if the underlying signature
+    // wasn't resolved.
+    bool IsEntityValid(void* entityMgr, FMassEntityHandle handle);
 }

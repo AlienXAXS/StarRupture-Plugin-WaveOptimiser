@@ -1,5 +1,6 @@
 #include "wave_optimiser_ui.h"
 #include "wave_optimiser.h"
+#include "heat_sampler.h"
 #include "plugin_helpers.h"
 #include "plugin_config.h"
 
@@ -18,6 +19,9 @@ namespace WaveOptimiserUI
 
             imgui->SeparatorText("Hook status");
             imgui->Text(stats.hookInstalled ? "AddEntitiesToWave hook: installed" : "AddEntitiesToWave hook: NOT installed");
+
+            if (!WaveOptimiserConfig::Config::IsEnabled())
+                imgui->TextDisabled("Plugin disabled in config - hooks are passing through unmodified (vanilla wave)");
 
             imgui->SeparatorText("Live queue");
 
@@ -42,6 +46,55 @@ namespace WaveOptimiserUI
             else
             {
                 imgui->TextDisabled("No batch in progress");
+            }
+
+            imgui->SeparatorText("Heat reset");
+
+            if (imgui->Button("Reset All Heat to Zero"))
+                HeatSampler::RequestResetAllHeat();
+
+            imgui->SeparatorText("Heat sampler");
+
+            if (imgui->Button(HeatSampler::IsEnabled() ? "Stop sampling" : "Sample heat at cursor"))
+                HeatSampler::SetEnabled(!HeatSampler::IsEnabled());
+
+            if (HeatSampler::IsEnabled())
+            {
+                const HeatSampler::Result result = HeatSampler::GetLastResult();
+                if (result.valid)
+                {
+                    std::snprintf(line, sizeof(line), "Actor: %s", result.actorName);
+                    imgui->Text(line);
+                    if (result.hasFragment)
+                    {
+                        std::snprintf(line, sizeof(line), "CurrentHeat: %.6f", result.heat);
+                        imgui->Text(line);
+                    }
+                    else if (!result.handleResolved)
+                        imgui->TextDisabled("No Mass entity mapped to this actor");
+                    else
+                        imgui->TextDisabled("No temperature fragment on this actor");
+
+                    // Diagnostic only. Cross-check Index/SerialNumber against the
+                    // "captured Add entity Index=... SerialNumber=..." Trace log line for
+                    // this same actor (logged by Detour_AddEntitiesToWave, ground truth
+                    // from the engine) to confirm the helper's offset-0 handle assumption.
+                    // IsEntityValid's AOB match is separately unverified and has been
+                    // observed rejecting known-valid entities - not used to gate the
+                    // fragment read above.
+                    if (result.handleResolved)
+                    {
+                        std::snprintf(line, sizeof(line), "(debug) Handle: Index=%d SerialNumber=%d",
+                            result.handleIndex, result.handleSerial);
+                        imgui->TextDisabled(line);
+
+                        std::snprintf(line, sizeof(line), "(debug) IsEntityValid: %s",
+                            result.entityValid ? "true" : "false");
+                        imgui->TextDisabled(line);
+                    }
+                }
+                else
+                    imgui->TextDisabled("Not looking at an actor");
             }
 
             imgui->SeparatorText("Lifetime totals");
