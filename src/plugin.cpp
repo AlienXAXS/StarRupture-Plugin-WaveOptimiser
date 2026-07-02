@@ -36,6 +36,16 @@ static PluginInfo s_pluginInfo = {
 	WAVE_OPTIMISER_PLUGIN_TARGET
 };
 
+// The wave queue and the cached FMassEntityManager/subsystem pointers are
+// world-scoped: replaying queued entities after their world tore down
+// hard-asserts inside FMassEntityManager (crash seen in the wild via
+// DescribeEntityActor). Drop everything before the world goes away.
+static void OnBeforeWorldEndPlay(SDK::UWorld* /*world*/, const char* worldName)
+{
+	LOG_DEBUG("World '%s' ending - clearing wave queue and world-scoped caches", worldName ? worldName : "<unknown>");
+	WaveOptimiser::OnWorldTeardown();
+}
+
 extern "C" {
 
 	__declspec(dllexport) PluginInfo* GetPluginInfo()
@@ -73,6 +83,7 @@ extern "C" {
 		// unmodified wave.
 		WaveOptimiser::Init(self);
 		self->hooks->Engine->RegisterOnTick(&WaveOptimiser::OnTick);
+		self->hooks->World->RegisterOnBeforeWorldEndPlay(&OnBeforeWorldEndPlay);
 
 		HeatSampler::Init(self);
 		self->hooks->Engine->RegisterOnTick(&HeatSampler::OnTick);
@@ -90,6 +101,7 @@ extern "C" {
 		{
 			WaveOptimiser::Shutdown(g_self);
 			g_self->hooks->Engine->UnregisterOnTick(&WaveOptimiser::OnTick);
+			g_self->hooks->World->UnregisterOnBeforeWorldEndPlay(&OnBeforeWorldEndPlay);
 			HeatSampler::Shutdown();
 			g_self->hooks->Engine->UnregisterOnTick(&HeatSampler::OnTick);
 			WaveOptimiserUI::Shutdown(g_self);

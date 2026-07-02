@@ -333,21 +333,39 @@ namespace WaveOptimiser
                 handles.size(), WaveOptimiserSignatures::TemperatureSignalName);
         }
 
+        // SEH guard for the fragment lookup below. The engine hard-asserts (a
+        // real SEH exception, not a C++ one) when the entity manager's storage
+        // has been torn down ("EntityStorageInterface without initialization" -
+        // seen in the wild when a world ended while entities were still queued)
+        // or when a handle is stale. Same pattern as heat_sampler.cpp's
+        // SafeGetFragmentDataPtr: no unwind-requiring locals in this frame.
+        void* GuardedGetFragmentDataPtr(FMassEntityHandle handle)
+        {
+            __try
+            {
+                return g_getFragmentDataPtr(g_cachedEntityMgr, handle, g_actorFragStruct);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return nullptr;
+            }
+        }
+
         // Diagnostic-only: resolves a replayed entity handle to its actor's
         // name/class for OnTick's trace logging. FMassActorFragment mirrors the
         // stock Epic layout {TWeakObjectPtr<AActor> Actor; pad} - queried through
         // the same generic g_getFragmentDataPtr accessor used for the temperature
         // fragment, then TWeakObjectPtr::Get() (real SDK code, no extra AOB)
-        // resolves the live AActor*. Safe to call unguarded here because these
-        // handles are always fresh off AddEntitiesToWave/RemoveEntitiesFromWave
-        // replay, never the arbitrary/possibly-stale handles heat_sampler.cpp
-        // has to SEH-guard against.
+        // resolves the live AActor*. The handles are always fresh off
+        // AddEntitiesToWave/RemoveEntitiesFromWave replay, but the *manager*
+        // can still be stale (world torn down with entries queued), so the
+        // lookup goes through the SEH guard above regardless.
         std::string DescribeEntityActor(FMassEntityHandle handle)
         {
             if (!g_cachedEntityMgr || !g_getFragmentDataPtr || !g_actorFragStruct)
                 return "actor=<unresolved>";
 
-            void* fragData = g_getFragmentDataPtr(g_cachedEntityMgr, handle, g_actorFragStruct);
+            void* fragData = GuardedGetFragmentDataPtr(handle);
             if (!fragData)
                 return "actor=<no FMassActorFragment>";
 
@@ -568,6 +586,23 @@ namespace WaveOptimiser
         g_actorFragStruct = nullptr;
         g_cachedEntityMgr = nullptr;
         g_signalEntities = nullptr;
+        g_cachedSignalSubsystem = nullptr;
+    }
+
+    void OnWorldTeardown()
+    {
+        std::lock_guard<std::mutex> lock(g_statsMutex);
+
+        if (!g_queue.empty())
+            LOG_INFO("WaveOptimiser: world teardown with %zu queued entities - dropping them (their entity manager is going away)", g_queue.size());
+
+        g_queue.clear();
+        g_currentBurstTotal = 0;
+
+        // World-scoped pointers - stale the moment the world ends. OnTick and
+        // Detour_AddEntitiesToWave re-resolve them lazily for the next world.
+        g_cachedEntityMgr = nullptr;
+        g_cachedWaveSubsystem = nullptr;
         g_cachedSignalSubsystem = nullptr;
     }
 
