@@ -42,31 +42,6 @@ namespace WaveOptimiserSignatures
         "48 89 5C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 "
         "48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 ?? 48 8B DA 48 89 54 24";
 
-    // FMassEntityView constructor. Signature:
-    //   FMassEntityView::FMassEntityView(FMassEntityView*, FMassEntityManager*, FMassEntityHandle)
-    // Used to build a view from a raw entity manager + handle pair so we can
-    // call HasTag on the result.
-    static const char* FMassEntityViewCtor =
-        "4C 8B DC 49 89 5B ?? 55 56 57 41 54 41 55 41 56 41 57 48 83 EC ?? 45 33 F6";
-
-    // FMassEntityView::HasTag(FMassEntityView*, const UScriptStruct*)
-    // Returns true if the entity's archetype composition includes the given tag.
-    static const char* FMassEntityViewHasTag =
-        "48 89 5C 24 ?? 57 48 83 EC ?? 48 8B D9 48 8B FA 48 83 C1 ?? 48 8B 53";
-
-    // FCrMassSimpleBuildingTag::StaticStruct - too small for a unique AOB;
-    // resolved via module base + this RVA (confirmed in IDA, default image base
-    // 0x140000000). Confirmed via IDA disassembly (not guessed) to be added
-    // unconditionally by UCrMassSimpleBuildingTrait::BuildTemplate - the trait
-    // used exclusively by grid-snapped structural pieces (foundations,
-    // platforms, walls, stairs, connectors, pillars, cooler/drill/water-
-    // extractor foundations) - and never by UCrMassBuildingTrait::BuildTemplate
-    // (furniture/machines/storages/crafting stations). Replaces the previously
-    // used FCrMassBuildingGridElementTag, which turned out to have zero native
-    // code xrefs anywhere in the engine (effectively dead/unused) and wrongly
-    // excluded legitimate structural buildings like BP_Modular_BasePlatform_C.
-    static const uintptr_t SimpleBuildingTag_StaticStructRVA = 0x72804B0;
-
     // FMassActorFragment::StaticStruct - too small for a unique AOB; resolved
     // via module base + this RVA (confirmed in IDA, default image base
     // 0x140000000). FMassActorFragment (MassActors module, stock Epic layout:

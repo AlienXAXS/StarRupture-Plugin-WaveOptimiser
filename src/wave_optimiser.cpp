@@ -107,20 +107,38 @@ namespace WaveOptimiser
         // g_cachedEntityMgr (both derive from the same UWorld*).
         void* g_cachedSignalSubsystem = nullptr;
 
-        // FMassEntityView constructor and HasTag — used for the structural-building
-        // filter applied during Add batch replay. FCrMassSimpleBuildingTag is added
-        // unconditionally by UCrMassSimpleBuildingTrait::BuildTemplate (grid-snapped
-        // structural pieces: foundations, platforms, walls, stairs, connectors,
-        // pillars, cooler/drill/water-extractor foundations) and never by
-        // UCrMassBuildingTrait::BuildTemplate (furniture/machines/storages/crafting
-        // stations) - confirmed via IDA disassembly of both trait BuildTemplate
-        // functions. Entities lacking it are skipped; structural buildings are
-        // heated directly.
-        typedef void(__fastcall* FMassEntityViewCtor_t)(void* view, void* entityMgr, FMassEntityHandle handle);
-        typedef bool(__fastcall* FMassEntityViewHasTag_t)(void* view, const void* tagStruct);
-        FMassEntityViewCtor_t   g_entityViewCtor    = nullptr;
-        FMassEntityViewHasTag_t g_entityViewHasTag  = nullptr;
-        void*                   g_simpleBuildingTagStruct = nullptr; // FCrMassSimpleBuildingTag UScriptStruct*
+        // Interior-only furnishings that must never be heated. Fragment presence
+        // alone is NOT the filter: these get a FCrMassTemperatureFragment from
+        // the base building trait, but their DA_* configs (all under
+        // Content/Chimera/Buildings/Interiors in the FModel export) have no
+        // CrMassTemperatureTrait, they can only be placed inside an interior,
+        // and vanilla never heats them. Every exterior building config (all 230
+        // DA_* assets, incl. machines/drone poles/storages) does carry the
+        // trait and should heat. No shared native parent exists (BP_ItemPrinter
+        // and BP_Furnace are both CrCrafter), so this is a manual per-BP-class
+        // exclusion list, matched with UObject::IsA against the actor from
+        // FMassActorFragment - IsA walks the Super chain, so derived variants
+        // (BP_CloningBed_Lander_C, BP_PersonalStorage_NonDeconstructible_C, ...)
+        // are covered by their base class entry.
+        const char* const kHeatExcludedClassNames[] = {
+            "BP_PersonalStorage_C",
+            "BP_PersonalStorageBig_C",
+            "BP_ResearchTerminal_C",
+            "BP_SuitWorkshop_C",
+            "BP_CloningBed_C",
+            "BP_Armory_C",
+            "BP_ItemPrinter_C",
+            "BP_UpgradeStation_C",
+            "BP_Recycler_C",
+            "BP_FoodProcessor_C",
+        };
+        constexpr size_t kHeatExcludedClassCount = sizeof(kHeatExcludedClassNames) / sizeof(kHeatExcludedClassNames[0]);
+
+        // UClass* cache for the list above, resolved lazily via the SDK's
+        // FindClassFast (one GObjects scan per class per world) - reset on
+        // world teardown since BlueprintGeneratedClasses can be GC'd/reloaded.
+        SDK::UClass* g_heatExcludedClasses[kHeatExcludedClassCount] = {};
+        bool         g_heatExcludedClassesResolved = false;
 
         // Cached FMassEntityManager* — derived once from the wave subsystem's outer
         // UWorld and reused each tick for heat injection.
@@ -380,6 +398,86 @@ namespace WaveOptimiser
                 actor->Class ? actor->Class->GetName().c_str() : "<no class>");
             return buf;
         }
+
+        // Fills g_heatExcludedClasses from kHeatExcludedClassNames. Classes that
+        // aren't loaded yet stay null and are retried on the next call (a class
+        // can't have live instances before it's loaded, so a null slot can't
+        // cause a wrongly-heated entity in the meantime).
+        void ResolveHeatExcludedClasses()
+        {
+            if (g_heatExcludedClassesResolved)
+                return;
+
+            // Tracks how many slots were still null after the previous attempt,
+            // so the "still unresolved" warning fires when the count changes
+            // rather than spamming every replayed batch.
+            static size_t s_lastUnresolvedCount = SIZE_MAX;
+
+            size_t unresolved = 0;
+            for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
+            {
+                if (g_heatExcludedClasses[i])
+                    continue;
+                g_heatExcludedClasses[i] = SDK::UObject::FindClassFast(kHeatExcludedClassNames[i]);
+                if (g_heatExcludedClasses[i])
+                    LOG_INFO("WaveOptimiser: heat-excluded class '%s' = 0x%llX",
+                        kHeatExcludedClassNames[i],
+                        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_heatExcludedClasses[i])));
+                else
+                    ++unresolved;
+            }
+            g_heatExcludedClassesResolved = (unresolved == 0);
+
+            if (unresolved != s_lastUnresolvedCount)
+            {
+                if (g_heatExcludedClassesResolved)
+                    LOG_INFO("WaveOptimiser: all %zu heat-excluded classes resolved", kHeatExcludedClassCount);
+                else
+                {
+                    // Not necessarily a problem - a class that was never loaded
+                    // (its BP not present in this world/save) has no instances
+                    // to exclude - but list the names so a typo'd entry is
+                    // visible instead of silently never matching.
+                    for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
+                        if (!g_heatExcludedClasses[i])
+                            LOG_INFO("WaveOptimiser: heat-excluded class '%s' not found in GObjects yet "
+                                "(not loaded, or misspelled) - will retry on next wave batch",
+                                kHeatExcludedClassNames[i]);
+                }
+                s_lastUnresolvedCount = unresolved;
+            }
+        }
+
+        // True if the entity's live actor IsA() any class in the exclusion list
+        // (interior-only furnishing - vanilla never heats these). Entities whose
+        // actor can't be resolved are treated as heatable (default allow), same
+        // as vanilla would.
+        bool IsHeatExcludedEntity(FMassEntityHandle handle, const char** matchedName)
+        {
+            *matchedName = nullptr;
+
+            if (!g_actorFragStruct)
+                return false;
+
+            void* fragData = GuardedGetFragmentDataPtr(handle);
+            if (!fragData)
+                return false;
+
+            const SDK::FWeakObjectPtr* weakActor = static_cast<const SDK::FWeakObjectPtr*>(fragData);
+            SDK::UObject* actor = weakActor->Get();
+            if (!actor)
+                return false;
+
+            for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
+            {
+                if (g_heatExcludedClasses[i] && actor->IsA(g_heatExcludedClasses[i]))
+                {
+                    *matchedName = kHeatExcludedClassNames[i];
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     bool Init(IPluginSelf* self)
@@ -484,28 +582,7 @@ namespace WaveOptimiser
         else
             LOG_WARN("WaveOptimiser: SignalEntities not found - wave heat injection won't notify the temperature signal processor");
 
-        // Resolve FMassEntityView constructor and HasTag for the building-grid filter.
-        uintptr_t entityViewCtorAddr = scanner->FindPatternInMainModule(WaveOptimiserSignatures::FMassEntityViewCtor);
-        if (entityViewCtorAddr)
-        {
-            g_entityViewCtor = reinterpret_cast<FMassEntityViewCtor_t>(entityViewCtorAddr);
-            LOG_DEBUG("WaveOptimiser: FMassEntityView ctor resolved at 0x%llX",
-                static_cast<unsigned long long>(entityViewCtorAddr));
-        }
-        else
-            LOG_WARN("WaveOptimiser: FMassEntityView ctor not found - building-grid heat filter will be inactive");
-
-        uintptr_t entityViewHasTagAddr = scanner->FindPatternInMainModule(WaveOptimiserSignatures::FMassEntityViewHasTag);
-        if (entityViewHasTagAddr)
-        {
-            g_entityViewHasTag = reinterpret_cast<FMassEntityViewHasTag_t>(entityViewHasTagAddr);
-            LOG_DEBUG("WaveOptimiser: FMassEntityView::HasTag resolved at 0x%llX",
-                static_cast<unsigned long long>(entityViewHasTagAddr));
-        }
-        else
-            LOG_WARN("WaveOptimiser: FMassEntityView::HasTag not found - building-grid heat filter will be inactive");
-
-        // Cache UScriptStruct* for both fragment/tag types via module base + RVA.
+        // Cache UScriptStruct* for the fragment types via module base + RVA.
         // All StaticStruct() fns are too small for unique AOBs.
         {
             HMODULE hMain = GetModuleHandleA(nullptr);
@@ -525,17 +602,6 @@ namespace WaveOptimiser
                         LOG_WARN("WaveOptimiser: FCrMassTemperatureFragment StaticStruct returned null - heat ops inert");
                 }
 
-                if (g_entityViewCtor && g_entityViewHasTag)
-                {
-                    auto fn = reinterpret_cast<StaticStruct_t>(base + WaveOptimiserSignatures::SimpleBuildingTag_StaticStructRVA);
-                    g_simpleBuildingTagStruct = fn();
-                    if (g_simpleBuildingTagStruct)
-                        LOG_DEBUG("WaveOptimiser: FCrMassSimpleBuildingTag UScriptStruct* = 0x%llX",
-                            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_simpleBuildingTagStruct)));
-                    else
-                        LOG_WARN("WaveOptimiser: FCrMassSimpleBuildingTag StaticStruct returned null - building filter inactive");
-                }
-
                 if (g_getFragmentDataPtr)
                 {
                     auto fn = reinterpret_cast<StaticStruct_t>(base + WaveOptimiserSignatures::ActorFragment_StaticStructRVA);
@@ -548,6 +614,13 @@ namespace WaveOptimiser
                 }
             }
         }
+
+        // Resolve the heat-excluded UClass*es up front so their addresses are in
+        // the log at startup rather than mid-wave. Classes not loaded yet (e.g.
+        // if init happens before a save is loaded) stay null here and are
+        // retried by the lazy call in OnTick's Add branch - which is a no-op
+        // once everything is resolved.
+        ResolveHeatExcludedClasses();
 
         LOG_INFO("WaveOptimiser: AddEntitiesToWave hooked at 0x%llX, RemoveEntitiesFromWave hooked at 0x%llX",
             static_cast<unsigned long long>(addAddr), static_cast<unsigned long long>(removeAddr));
@@ -580,9 +653,9 @@ namespace WaveOptimiser
         g_isEntityValid = nullptr;
         g_getSubsystemFn = nullptr;
         g_cachedWaveSubsystem = nullptr;
-        g_entityViewCtor = nullptr;
-        g_entityViewHasTag = nullptr;
-        g_simpleBuildingTagStruct = nullptr;
+        for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
+            g_heatExcludedClasses[i] = nullptr;
+        g_heatExcludedClassesResolved = false;
         g_actorFragStruct = nullptr;
         g_cachedEntityMgr = nullptr;
         g_signalEntities = nullptr;
@@ -601,6 +674,12 @@ namespace WaveOptimiser
 
         // World-scoped pointers - stale the moment the world ends. OnTick and
         // Detour_AddEntitiesToWave re-resolve them lazily for the next world.
+        // The exclusion-class cache is dropped too: BlueprintGeneratedClasses
+        // can be GC'd on world unload; ResolveHeatExcludedClasses re-resolves
+        // them from GObjects on the next replayed Add batch.
+        for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
+            g_heatExcludedClasses[i] = nullptr;
+        g_heatExcludedClassesResolved = false;
         g_cachedEntityMgr = nullptr;
         g_cachedWaveSubsystem = nullptr;
         g_cachedSignalSubsystem = nullptr;
@@ -689,31 +768,26 @@ namespace WaveOptimiser
 
                     // The Mass processor that applies heat via EnviroWaveStatusChanged_0
                     // may have unsubscribed by the time our deferred batch is replayed
-                    // (it unsubscribes when the wave finishes). Inject heat directly for
-                    // structural buildings. Furniture/machines/storages lack
-                    // FCrMassSimpleBuildingTag (only added by
-                    // UCrMassSimpleBuildingTrait::BuildTemplate, confirmed via IDA) and
-                    // are intentionally skipped.
+                    // (it unsubscribes when the wave finishes). Inject heat directly
+                    // into every entity with a temperature fragment, except the
+                    // interior-only furnishings in kHeatExcludedClassNames (they have
+                    // the fragment but vanilla never heats them - see the list's
+                    // comment for the full reasoning).
+                    ResolveHeatExcludedClasses();
+
                     const bool canFilter = g_cachedEntityMgr
                         && g_getFragmentDataPtr
-                        && g_temperatureFragStruct
-                        && g_entityViewCtor
-                        && g_entityViewHasTag
-                        && g_simpleBuildingTagStruct;
+                        && g_temperatureFragStruct;
 
                     // Dumps which prerequisite is missing whenever heat injection can't
                     // run at all - the fastest way to spot "why is nothing getting hot".
                     if (!canFilter)
                     {
                         LOG_TRACE("WaveOptimiser: heat injection disabled this batch - entityMgr=%s "
-                            "getFragmentDataPtr=%s tempFragStruct=%s entityViewCtor=%s entityViewHasTag=%s "
-                            "simpleBuildingTag=%s",
+                            "getFragmentDataPtr=%s tempFragStruct=%s",
                             g_cachedEntityMgr ? "ok" : "NULL",
                             g_getFragmentDataPtr ? "ok" : "NULL",
-                            g_temperatureFragStruct ? "ok" : "NULL",
-                            g_entityViewCtor ? "ok" : "NULL",
-                            g_entityViewHasTag ? "ok" : "NULL",
-                            g_simpleBuildingTagStruct ? "ok" : "NULL");
+                            g_temperatureFragStruct ? "ok" : "NULL");
                     }
 
                     for (int i = 0; i < batch.Count(); ++i)
@@ -729,16 +803,16 @@ namespace WaveOptimiser
                             continue;
                         }
 
-                        alignas(8) uint8_t viewBuf[128] = {};
-                        g_entityViewCtor(viewBuf, g_cachedEntityMgr, handle);
-                        const bool hasSimpleBuildingTag = g_entityViewHasTag(viewBuf, g_simpleBuildingTagStruct);
-
-                        if (!hasSimpleBuildingTag)
+                        const char* excludedAs = nullptr;
+                        if (IsHeatExcludedEntity(handle, &excludedAs))
                         {
-                            LOG_TRACE("WaveOptimiser: Add entity Index=%d SerialNumber=%d (wave type %u) %s - "
-                                "no FCrMassSimpleBuildingTag, treated as non-structural furnishing, heat skipped",
-                                handle.Index, handle.SerialNumber, static_cast<unsigned>(waveType),
-                                DescribeEntityActor(handle).c_str());
+                            // LOG_INFO (not TRACE) so exclusion hits are visible at the
+                            // default log level - the quickest way to confirm interior
+                            // furnishings are being protected during a real wave.
+                            LOG_INFO("WaveOptimiser: heat EXCLUDED - %s matched IsA(%s), interior-only furnishing "
+                                "(entity Index=%d SerialNumber=%d, wave type %u)",
+                                DescribeEntityActor(handle).c_str(), excludedAs,
+                                handle.Index, handle.SerialNumber, static_cast<unsigned>(waveType));
                             continue;
                         }
 
@@ -749,14 +823,14 @@ namespace WaveOptimiser
                             *heat = 600.0f; // confirmed via HeatSampler against vanilla (passthrough) wave behavior
                             heatedHandles.push_back(handle);
                             LOG_TRACE("WaveOptimiser: Add entity Index=%d SerialNumber=%d (wave type %u) %s - "
-                                "structural building, CurrentHeat %.1f -> 600.0",
+                                "CurrentHeat %.1f -> 600.0",
                                 handle.Index, handle.SerialNumber, static_cast<unsigned>(waveType),
                                 DescribeEntityActor(handle).c_str(), before);
                         }
                         else
                         {
                             LOG_TRACE("WaveOptimiser: Add entity Index=%d SerialNumber=%d (wave type %u) %s - "
-                                "structural building but GetFragmentDataPtr returned NULL, no CurrentHeat fragment on this entity",
+                                "no CurrentHeat fragment, heat skipped",
                                 handle.Index, handle.SerialNumber, static_cast<unsigned>(waveType),
                                 DescribeEntityActor(handle).c_str());
                         }
