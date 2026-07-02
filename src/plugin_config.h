@@ -16,10 +16,10 @@ namespace WaveOptimiserConfig
 			"WaveOptimiser",
 			"MaxEntitiesPerTick",
 			ConfigValueType::Integer,
-			"256",
+			"128",
 			"Max wave entities processed per tick when batching a large AddEntitiesToWave call",
 			1.0f,
-			512.0f
+			128.0f
 		},
 		{
 			"WaveOptimiser",
@@ -57,7 +57,7 @@ namespace WaveOptimiserConfig
 
 		static int GetMaxEntitiesPerTick()
 		{
-			int value = s_self ? s_self->config->ReadInt(s_self, "WaveOptimiser", "MaxEntitiesPerTick", 32) : 32;
+			int value = s_self ? s_self->config->ReadInt(s_self, "WaveOptimiser", "MaxEntitiesPerTick", 128) : 128;
 			if (value < 1) value = 1;
 			if (value > 128) value = 128; // batch capacity cap - see mass_entity_set.h kMaxBatchCapacity
 			return value;
