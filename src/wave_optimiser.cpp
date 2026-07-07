@@ -399,6 +399,41 @@ namespace WaveOptimiser
             return buf;
         }
 
+        // Resolves the fragment UScriptStruct*s by object name from GObjects.
+        // Previously these came from hardcoded client-binary RVAs, which crashed
+        // the dedicated server (separate link, different addresses -> the blind
+        // indirect call fastfailed with 0xc0000409). A name lookup works on any
+        // binary. Unlike calling StaticStruct(), FindObjectFast only sees a
+        // struct once the engine has registered it, so null results here are
+        // retried from OnTick's Add branch until both resolve.
+        void ResolveFragmentStructs()
+        {
+            if (!g_getFragmentDataPtr)
+                return;
+
+            if (!g_temperatureFragStruct)
+            {
+                g_temperatureFragStruct = SDK::UObject::FindObjectFast<SDK::UScriptStruct>(
+                    "CrMassTemperatureFragment", SDK::EClassCastFlags::ScriptStruct);
+                if (g_temperatureFragStruct)
+                    LOG_DEBUG("WaveOptimiser: FCrMassTemperatureFragment UScriptStruct* = 0x%llX",
+                        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_temperatureFragStruct)));
+                else
+                    LOG_DEBUG("WaveOptimiser: FCrMassTemperatureFragment not in GObjects yet - will retry (heat ops inert until resolved)");
+            }
+
+            if (!g_actorFragStruct)
+            {
+                g_actorFragStruct = SDK::UObject::FindObjectFast<SDK::UScriptStruct>(
+                    "MassActorFragment", SDK::EClassCastFlags::ScriptStruct);
+                if (g_actorFragStruct)
+                    LOG_DEBUG("WaveOptimiser: FMassActorFragment UScriptStruct* = 0x%llX",
+                        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_actorFragStruct)));
+                else
+                    LOG_DEBUG("WaveOptimiser: FMassActorFragment not in GObjects yet - will retry (OnTick trace won't include actor name/class)");
+            }
+        }
+
         // Fills g_heatExcludedClasses from kHeatExcludedClassNames. Classes that
         // aren't loaded yet stay null and are retried on the next call (a class
         // can't have live instances before it's loaded, so a null slot can't
@@ -582,38 +617,10 @@ namespace WaveOptimiser
         else
             LOG_WARN("WaveOptimiser: SignalEntities not found - wave heat injection won't notify the temperature signal processor");
 
-        // Cache UScriptStruct* for the fragment types via module base + RVA.
-        // All StaticStruct() fns are too small for unique AOBs.
-        {
-            HMODULE hMain = GetModuleHandleA(nullptr);
-            if (hMain)
-            {
-                using StaticStruct_t = void*(*)();
-                const uintptr_t base = reinterpret_cast<uintptr_t>(hMain);
-
-                if (g_getFragmentDataPtr)
-                {
-                    auto fn = reinterpret_cast<StaticStruct_t>(base + WaveOptimiserSignatures::TemperatureFragment_StaticStructRVA);
-                    g_temperatureFragStruct = fn();
-                    if (g_temperatureFragStruct)
-                        LOG_DEBUG("WaveOptimiser: FCrMassTemperatureFragment UScriptStruct* = 0x%llX",
-                            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_temperatureFragStruct)));
-                    else
-                        LOG_WARN("WaveOptimiser: FCrMassTemperatureFragment StaticStruct returned null - heat ops inert");
-                }
-
-                if (g_getFragmentDataPtr)
-                {
-                    auto fn = reinterpret_cast<StaticStruct_t>(base + WaveOptimiserSignatures::ActorFragment_StaticStructRVA);
-                    g_actorFragStruct = fn();
-                    if (g_actorFragStruct)
-                        LOG_DEBUG("WaveOptimiser: FMassActorFragment UScriptStruct* = 0x%llX",
-                            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_actorFragStruct)));
-                    else
-                        LOG_WARN("WaveOptimiser: FMassActorFragment StaticStruct returned null - OnTick trace won't include actor name/class");
-                }
-            }
-        }
+        // Cache UScriptStruct* for the fragment types by name from GObjects.
+        // Both structs may not be registered yet this early; ResolveFragmentStructs
+        // is retried lazily from OnTick's Add branch until both resolve.
+        ResolveFragmentStructs();
 
         // Resolve the heat-excluded UClass*es up front so their addresses are in
         // the log at startup rather than mid-wave. Classes not loaded yet (e.g.
@@ -774,6 +781,7 @@ namespace WaveOptimiser
                     // the fragment but vanilla never heats them - see the list's
                     // comment for the full reasoning).
                     ResolveHeatExcludedClasses();
+                    ResolveFragmentStructs();
 
                     const bool canFilter = g_cachedEntityMgr
                         && g_getFragmentDataPtr

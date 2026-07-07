@@ -31,9 +31,13 @@ namespace WaveOptimiserSignatures
         "40 53 56 41 56 48 81 EC ?? ?? ?? ?? 48 83 B9 ?? ?? ?? ?? ?? 4D 8B F0";
     static const size_t InternalGetFragmentDataPtr_CallOffset = 0x27D;
 
-    // FCrMassTemperatureFragment::StaticStruct — too small for a unique AOB;
-    // resolved via module base + RVA (confirmed in IDA, default image base 0x140000000).
-    static const uintptr_t TemperatureFragment_StaticStructRVA = 0x72C76A0;
+    // Note: the fragment UScriptStruct*s (FCrMassTemperatureFragment,
+    // FMassActorFragment) are intentionally NOT resolved here. Their
+    // StaticStruct() functions are too small for unique AOBs, and hardcoded
+    // RVAs are client-binary-specific (they crashed the dedicated server -
+    // separate link, different addresses). They're resolved by object name
+    // via SDK::UObject::FindObjectFast in ResolveFragmentStructs()
+    // (wave_optimiser.cpp), which works on both binaries.
 
     // UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave prologue. Signature
     // (UCrMassEnviroWaveSubsystem*, const TSet<FMassEntityHandle>*) - no
@@ -41,15 +45,6 @@ namespace WaveOptimiserSignatures
     static const char* RemoveEntitiesFromWave =
         "48 89 5C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 "
         "48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 ?? 48 8B DA 48 89 54 24";
-
-    // FMassActorFragment::StaticStruct - too small for a unique AOB; resolved
-    // via module base + this RVA (confirmed in IDA, default image base
-    // 0x140000000). FMassActorFragment (MassActors module, stock Epic layout:
-    // {TWeakObjectPtr<AActor> Actor; uint8 Pad[4]}) is what lets OnTick's
-    // diagnostic trace resolve a replayed entity handle back to its actor
-    // name/class via the same InternalGetFragmentDataPtr accessor already
-    // used for the temperature fragment.
-    static const uintptr_t ActorFragment_StaticStructRVA = 0x6631960;
 
     // FMassEntityManager::IsEntityValid(FMassEntityManager*, FMassEntityHandle)
     // Returns whether a handle still refers to a live entity. Must be checked
