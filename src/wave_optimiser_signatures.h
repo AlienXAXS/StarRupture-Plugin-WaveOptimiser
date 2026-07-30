@@ -66,6 +66,36 @@ namespace WaveOptimiserSignatures
     static const char* SignalEntities =
         "48 8B C4 48 89 50 ?? 55 48 81 EC ?? ?? ?? ?? 41 83 78";
 
+    // UCrBuildingFunctionLibrary::AddTemperatureToEntity(UWorld*, FMassEntityHandle, float)
+    // The game's own "apply heat to one building" primitive. Does two things:
+    //   CurrentHeat = min(CurrentHeat + Value, UCrTemperatureDeveloperSettings::BuildingsHeatCapacity)
+    //   CommandBuffer.AddTag<FCrMassTemperatureUpdatingTag>(Entity)
+    // That second half is the whole reason we call it instead of writing the
+    // fragment ourselves. UCrMassTemperatureProcessor::ConfigureQueries requires
+    // FCrMassTemperatureProcessorTag (presence All) plus *either*
+    // FCrMassEnviroWaveStageMovingTag or FCrMassTemperatureUpdatingTag (both
+    // presence Any). Since we replace the vanilla AddEntitiesToWave body (which
+    // is what would normally add the moving tag) with a direct heat write, an
+    // entity we heat carries neither tag - so the temperature processor never
+    // matches its archetype and the building stays overheated forever. Players
+    // saw this as "production never restarts while AFK, but everything cools the
+    // moment I move around": moving triggers
+    // UCrMassTemperatureSubsystem::OnWeatherRegionsChanged, which blanket-adds
+    // FCrMassTemperatureUpdatingTag to every registered temperature entity and
+    // accidentally unsticks them.
+    // The same tag also gates UCrHeaterCoolerProcessor, so heater/cooler
+    // buildings were inert on wave-heated entities too.
+    // Not a UFUNCTION (no exec thunk in the binary), hence the AOB rather than
+    // an SDK reflection call. Takes UWorld* and resolves the entity manager and
+    // the correct deferred command buffer internally, so we don't have to mirror
+    // any of those offsets ourselves.
+    // Note it does NOT stamp FCrMassTemperatureFragment::LastUpdateTime - callers
+    // that apply a large jump in heat have to do that themselves or the cooling
+    // processor will bill them for every second since the entity last simulated
+    // (see SetEntityHeat in wave_optimiser.cpp).
+    static const char* AddTemperatureToEntity =
+        "48 89 5C 24 ?? 48 89 54 24 ?? 55 48 83 EC 30 0F 29 74 24 ?? 48 8B DA 0F 28 F2";
+
     // Signal name UCrMassTemperatureSignalProcessor listens for. Fired via
     // SignalEntities (above) after any direct CurrentHeat write - reset-all-heat
     // (heat_sampler.cpp) and wave heat injection (wave_optimiser.cpp) - so the

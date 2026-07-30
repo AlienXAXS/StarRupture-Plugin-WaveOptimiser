@@ -177,6 +177,9 @@ namespace HeatSampler
             std::vector<::FMassEntityHandle> zeroedHandles;
             zeroedHandles.reserve(static_cast<size_t>(actors.Num()));
 
+            // Sampled once, not per actor - GetTimeSeconds is a reflected call.
+            const float worldTimeSeconds = static_cast<float>(UGameplayStatics::GetTimeSeconds(world));
+
             for (int i = 0; i < actors.Num(); ++i)
             {
                 AActor* actor = actors[i];
@@ -190,7 +193,14 @@ namespace HeatSampler
                 void* fragData = SafeGetFragmentDataPtr(ctx.getFragDataFn, entityMgr, handle, ctx.tempStructPtr);
                 if (fragData)
                 {
-                    *static_cast<float*>(fragData) = 0.0f;
+                    // Go through the game's own AddTemperatureToEntity so the
+                    // entity also picks up FCrMassTemperatureUpdatingTag - a bare
+                    // fragment write drops CurrentHeat to zero but leaves the
+                    // entity outside UCrMassTemperatureProcessor's query, so the
+                    // rest of the temperature state never re-evaluates. Falls
+                    // back to the direct write if the signature didn't resolve.
+                    if (!WaveOptimiser::SetEntityHeat(world, handle, 0.0f, worldTimeSeconds))
+                        *static_cast<float*>(fragData) = 0.0f;
                     zeroedHandles.push_back(handle);
                 }
             }

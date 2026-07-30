@@ -64,6 +64,35 @@ namespace WaveOptimiser
     // or if massEntitySubsystem can't be reached for this world.
     void* ResolveEntityManagerFromWorld(void* world);
 
+    // Sets an entity's CurrentHeat to targetHeat through the game's own
+    // UCrBuildingFunctionLibrary::AddTemperatureToEntity (expressed as a delta
+    // off the current value, since that function adds rather than assigns).
+    //
+    // Always prefer this over writing the FCrMassTemperatureFragment directly:
+    // the engine function also pushes AddTag<FCrMassTemperatureUpdatingTag>,
+    // which is what makes UCrMassTemperatureProcessor start simulating the
+    // entity again. A raw fragment write leaves the entity in an archetype the
+    // cooling processor doesn't match, so the heat we applied never decays -
+    // see the AddTemperatureToEntity comment in wave_optimiser_signatures.h.
+    //
+    // Also stamps the fragment's LastUpdateTime with worldTimeSeconds, which
+    // callers get from UGameplayStatics::GetTimeSeconds(world) once per tick
+    // (it's a reflected call - don't do it per entity). This is not optional:
+    // UCrMassTemperatureProcessor cools by `rate * (now - LastUpdateTime)`, and
+    // that field is only refreshed while the entity is actively simulating. A
+    // building that finished cooling minutes ago has a correspondingly stale
+    // stamp, so without the refresh the first pass after we apply heat would
+    // charge it minutes of cooling at once and zero the heat in a single frame -
+    // the overheat phase would be skipped entirely. Vanilla avoids this because
+    // its wave passes refresh the stamp every tick while the moving tag is on.
+    //
+    // Game thread only: the deferred command buffer asserts if commands are
+    // pushed from any other thread. Returns false if the signature wasn't
+    // resolved, the world/handle is unusable, or the entity has no temperature
+    // fragment - callers decide whether to fall back to a direct write (which
+    // applies heat but forfeits cooling) or skip the entity entirely.
+    bool SetEntityHeat(void* world, FMassEntityHandle handle, float targetHeat, float worldTimeSeconds);
+
     // Checks whether a handle still refers to a live entity in the given entity
     // manager. Call before any fragment/tag lookup on a handle that wasn't just
     // freshly handed to us by AddEntitiesToWave (e.g. historical handles, or

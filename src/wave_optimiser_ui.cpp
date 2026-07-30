@@ -173,7 +173,7 @@ namespace WaveOptimiserUI
             return;
         }
 
-        self->hooks->UI->RegisterOnConfigChanged(&OnConfigChanged);
+        self->hooks->UI->RegisterOnConfigChanged(self, &OnConfigChanged);
 
         if (WaveOptimiserConfig::Config::GetShowDebugPanel())
             EnsureRegistered(self);
@@ -184,7 +184,7 @@ namespace WaveOptimiserUI
     void Shutdown(IPluginSelf* self)
     {
         if (self->hooks->UI)
-            self->hooks->UI->UnregisterOnConfigChanged(&OnConfigChanged);
+            self->hooks->UI->UnregisterOnConfigChanged(self, &OnConfigChanged);
 
         Unregister(self);
     }

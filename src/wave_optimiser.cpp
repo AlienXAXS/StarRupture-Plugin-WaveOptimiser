@@ -12,6 +12,10 @@
 // core UObject reflection accessors, not client-only actor/raycast APIs.
 #include "CoreUObject_classes.hpp"
 
+// Also provides UGameplayStatics::GetTimeSeconds, used to stamp
+// FCrMassTemperatureFragment::LastUpdateTime when applying wave heat (see
+// SetEntityHeat). Reflected UFUNCTION, present in both SDK dumps.
+//
 // UMassSignalSubsystem::StaticClass()/USubsystemBlueprintLibrary - needed to
 // fire the same temperature-change signal the reset-all-heat tool fires (see
 // heat_sampler.cpp's PerformResetAllHeat) after this file's direct CurrentHeat
@@ -106,6 +110,33 @@ namespace WaveOptimiser
         // Cached UMassSignalSubsystem* - resolved lazily the same way as
         // g_cachedEntityMgr (both derive from the same UWorld*).
         void* g_cachedSignalSubsystem = nullptr;
+
+        // UCrBuildingFunctionLibrary::AddTemperatureToEntity - the game's own
+        // heat-application primitive. Writes the clamped value *and* pushes
+        // AddTag<FCrMassTemperatureUpdatingTag>, which is what lets
+        // UCrMassTemperatureProcessor cool the building afterwards. See the AOB
+        // comment in wave_optimiser_signatures.h for why a raw fragment write
+        // leaves entities permanently overheated.
+        typedef void(__fastcall* AddTemperatureToEntity_t)(void* world, FMassEntityHandle handle, float value);
+        AddTemperatureToEntity_t g_addTemperatureToEntity = nullptr;
+
+        // Heat a wave applies to each affected building. Originally derived
+        // empirically via HeatSampler against vanilla (passthrough) waves; since
+        // confirmed to be UCrTemperatureDeveloperSettings::BuildingsHeatCapacity -
+        // CrMassTemperatureHelpers::UpdateHeatFromTemperature assigns
+        // `CurrentHeat = ±BuildingsHeatCapacity` outright whenever the local
+        // temperature exceeds ±100, which is exactly the in-wave case. Since
+        // AddTemperatureToEntity clamps to that same cap, a game update that
+        // retunes it leaves us landing on the new cap rather than overshooting.
+        constexpr float kWaveHeat = 600.0f;
+
+        // Byte offset of FCrMassTemperatureFragment::LastUpdateTime. The fragment
+        // is {float CurrentHeat @0x00; FCrThermalHeatModifiers Modifiers @0x08;
+        // TArray<FMassEntityHandle> CoresActiveCooling @0x68; float LastUpdateTime
+        // @0x78} (sizeof 0x80), confirmed in IDA from the temperature processor's
+        // own access - `movss xmm3, dword ptr [rdi+78h]` at 0x147719E65. There is
+        // no engine setter for it, hence the direct write.
+        constexpr size_t kLastUpdateTimeOffset = 0x78;
 
         // Interior-only furnishings that must never be heated. Fragment presence
         // alone is NOT the filter: these get a FCrMassTemperatureFragment from
@@ -357,15 +388,33 @@ namespace WaveOptimiser
         // seen in the wild when a world ended while entities were still queued)
         // or when a handle is stale. Same pattern as heat_sampler.cpp's
         // SafeGetFragmentDataPtr: no unwind-requiring locals in this frame.
-        void* GuardedGetFragmentDataPtr(FMassEntityHandle handle)
+        void* GuardedGetFragmentDataPtr(void* entityMgr, FMassEntityHandle handle, const void* fragStruct)
         {
             __try
             {
-                return g_getFragmentDataPtr(g_cachedEntityMgr, handle, g_actorFragStruct);
+                return g_getFragmentDataPtr(entityMgr, handle, fragStruct);
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
                 return nullptr;
+            }
+        }
+
+        // SEH guard for the engine call itself - AddTemperatureToEntity does its
+        // own InternalGetFragmentDataPtr, which hard-asserts on a stale handle
+        // rather than returning null. Deferred replay means a handle can die
+        // between capture and replay, so this can't be assumed safe. Same
+        // no-unwinding-locals constraint as GuardedGetFragmentDataPtr above.
+        bool GuardedAddTemperature(void* world, FMassEntityHandle handle, float delta)
+        {
+            __try
+            {
+                g_addTemperatureToEntity(world, handle, delta);
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
             }
         }
 
@@ -383,7 +432,7 @@ namespace WaveOptimiser
             if (!g_cachedEntityMgr || !g_getFragmentDataPtr || !g_actorFragStruct)
                 return "actor=<unresolved>";
 
-            void* fragData = GuardedGetFragmentDataPtr(handle);
+            void* fragData = GuardedGetFragmentDataPtr(g_cachedEntityMgr, handle, g_actorFragStruct);
             if (!fragData)
                 return "actor=<no FMassActorFragment>";
 
@@ -494,7 +543,7 @@ namespace WaveOptimiser
             if (!g_actorFragStruct)
                 return false;
 
-            void* fragData = GuardedGetFragmentDataPtr(handle);
+            void* fragData = GuardedGetFragmentDataPtr(g_cachedEntityMgr, handle, g_actorFragStruct);
             if (!fragData)
                 return false;
 
@@ -513,6 +562,40 @@ namespace WaveOptimiser
             }
             return false;
         }
+    }
+
+    bool SetEntityHeat(void* world, FMassEntityHandle handle, float targetHeat, float worldTimeSeconds)
+    {
+        if (!g_addTemperatureToEntity || !world || !g_getFragmentDataPtr || !g_temperatureFragStruct)
+            return false;
+
+        // AddTemperatureToEntity finds the entity manager itself; we only need
+        // one to read the current heat for the delta below. Fall back to
+        // deriving it from the world so this still works before the first wave
+        // has populated g_cachedEntityMgr (the reset-all-heat tool's case).
+        void* entityMgr = g_cachedEntityMgr ? g_cachedEntityMgr : ResolveEntityManagerFromWorld(world);
+        if (!entityMgr)
+            return false;
+
+        // AddTemperatureToEntity adds rather than assigns, so read the current
+        // value and pass the difference. It then clamps to
+        // BuildingsHeatCapacity, so if the game's own cap is below targetHeat we
+        // land on the cap rather than overshooting it - which is what we want.
+        float* heat = static_cast<float*>(GuardedGetFragmentDataPtr(entityMgr, handle, g_temperatureFragStruct));
+        if (!heat)
+            return false;
+
+        if (!GuardedAddTemperature(world, handle, targetHeat - *heat))
+            return false;
+
+        // Refresh LastUpdateTime so the cooling processor's first pass charges a
+        // normal frame's worth of decay instead of everything since this
+        // building last simulated. See the header comment for why this matters.
+        // kLastUpdateTimeOffset is a struct field offset, not a module RVA - it's
+        // identical on client and server, so it doesn't fall foul of the
+        // no-hardcoded-addresses rule.
+        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(heat) + kLastUpdateTimeOffset) = worldTimeSeconds;
+        return true;
     }
 
     bool Init(IPluginSelf* self)
@@ -617,6 +700,24 @@ namespace WaveOptimiser
         else
             LOG_WARN("WaveOptimiser: SignalEntities not found - wave heat injection won't notify the temperature signal processor");
 
+        // Resolve UCrBuildingFunctionLibrary::AddTemperatureToEntity. Without it
+        // we fall back to writing CurrentHeat directly, which applies heat but
+        // never adds FCrMassTemperatureUpdatingTag - so heated buildings stay
+        // overheated until something else re-tags them (in practice: the player
+        // moving far enough to trigger OnWeatherRegionsChanged). Warn loudly,
+        // because the failure mode is a slow-burn gameplay bug, not a crash.
+        uintptr_t addTempAddr = scanner->FindPatternInMainModule(WaveOptimiserSignatures::AddTemperatureToEntity);
+        if (addTempAddr)
+        {
+            g_addTemperatureToEntity = reinterpret_cast<AddTemperatureToEntity_t>(addTempAddr);
+            LOG_DEBUG("WaveOptimiser: UCrBuildingFunctionLibrary::AddTemperatureToEntity resolved at 0x%llX",
+                static_cast<unsigned long long>(addTempAddr));
+        }
+        else
+            LOG_WARN("WaveOptimiser: AddTemperatureToEntity not found - falling back to direct CurrentHeat writes. "
+                "Heated buildings will NOT cool down on their own (no FCrMassTemperatureUpdatingTag) until the "
+                "player moves enough to trigger a weather-region change.");
+
         // Cache UScriptStruct* for the fragment types by name from GObjects.
         // Both structs may not be registered yet this early; ResolveFragmentStructs
         // is retried lazily from OnTick's Add branch until both resolve.
@@ -667,6 +768,7 @@ namespace WaveOptimiser
         g_cachedEntityMgr = nullptr;
         g_signalEntities = nullptr;
         g_cachedSignalSubsystem = nullptr;
+        g_addTemperatureToEntity = nullptr;
     }
 
     void OnWorldTeardown()
@@ -723,6 +825,19 @@ namespace WaveOptimiser
         const int maxPerTick = WaveOptimiserConfig::Config::GetMaxEntitiesPerTick();
         int processed = 0;
 
+        // Needed by SetEntityHeat below - resolved once per tick rather than per
+        // entity. Null before the first wave populates g_cachedWaveSubsystem, in
+        // which case heat injection degrades to the direct-write fallback.
+        void* world = ResolveWorld();
+
+        // GetTimeSeconds goes through UFUNCTION reflection, so it's sampled once
+        // per tick and reused for every entity in every batch below. Sub-frame
+        // drift doesn't matter: the value only has to be recent enough that the
+        // cooling processor's first pass sees a small delta.
+        const float worldTimeSeconds = world
+            ? static_cast<float>(SDK::UGameplayStatics::GetTimeSeconds(reinterpret_cast<SDK::UObject*>(world)))
+            : 0.0f;
+
         MassEntitySet::Batch batch;
 
         // Entities heated directly below (Add branch) across every batch this
@@ -773,13 +888,24 @@ namespace WaveOptimiser
                 {
                     //g_original(subsystem, batch.AsScriptSet(), waveType);
 
-                    // The Mass processor that applies heat via EnviroWaveStatusChanged_0
-                    // may have unsubscribed by the time our deferred batch is replayed
-                    // (it unsubscribes when the wave finishes). Inject heat directly
-                    // into every entity with a temperature fragment, except the
-                    // interior-only furnishings in kHeatExcludedClassNames (they have
-                    // the fragment but vanilla never heats them - see the list's
-                    // comment for the full reasoning).
+                    // We deliberately don't replay the vanilla AddEntitiesToWave.
+                    // It adds FCrMassEnviroWaveStageMovingTag and lets
+                    // UCrMassTemperatureProcessor ramp heat over the wave's
+                    // lifetime - but by the time a deferred batch is replayed the
+                    // wave has usually moved on, so the ramp never completes.
+                    // Instead we apply the end-state heat directly, per entity,
+                    // skipping the interior-only furnishings in
+                    // kHeatExcludedClassNames (they carry the temperature fragment
+                    // from the base building trait but vanilla never heats them -
+                    // see the list's comment for the full reasoning).
+                    //
+                    // Skipping the original also means EntitiesInWave is never
+                    // populated, so OnWaveStarted/OnWaveFinished (which iterate it)
+                    // are no-ops for us. That's consistent rather than broken:
+                    // those exist to add/strip the moving tag we never set. The
+                    // one thing we must not skip is FCrMassTemperatureUpdatingTag,
+                    // which SetEntityHeat below takes care of - without it the
+                    // cooling processor never matches the entity at all.
                     ResolveHeatExcludedClasses();
                     ResolveFragmentStructs();
 
@@ -824,16 +950,27 @@ namespace WaveOptimiser
                             continue;
                         }
 
-                        float* heat = static_cast<float*>(g_getFragmentDataPtr(g_cachedEntityMgr, handle, g_temperatureFragStruct));
+                        float* heat = static_cast<float*>(GuardedGetFragmentDataPtr(g_cachedEntityMgr, handle, g_temperatureFragStruct));
                         if (heat)
                         {
                             const float before = *heat;
-                            *heat = 600.0f; // confirmed via HeatSampler against vanilla (passthrough) wave behavior
+
+                            // Route through the game's own AddTemperatureToEntity
+                            // rather than assigning *heat, so the entity also gets
+                            // FCrMassTemperatureUpdatingTag and UCrMassTemperatureProcessor
+                            // will actually cool it back down afterwards. The direct
+                            // write below is only a degraded fallback for when the
+                            // signature didn't resolve - it heats but never cools.
+                            const bool tagged = SetEntityHeat(world, handle, kWaveHeat, worldTimeSeconds);
+                            if (!tagged)
+                                *heat = kWaveHeat;
+
                             heatedHandles.push_back(handle);
                             LOG_TRACE("WaveOptimiser: Add entity Index=%d SerialNumber=%d (wave type %u) %s - "
-                                "CurrentHeat %.1f -> 600.0",
+                                "CurrentHeat %.1f -> %.1f (%s)",
                                 handle.Index, handle.SerialNumber, static_cast<unsigned>(waveType),
-                                DescribeEntityActor(handle).c_str(), before);
+                                DescribeEntityActor(handle).c_str(), before, *heat,
+                                tagged ? "tagged for cooling" : "DIRECT WRITE, will not cool");
                         }
                         else
                         {
