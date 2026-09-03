@@ -598,30 +598,117 @@ namespace WaveOptimiser
         return true;
     }
 
+    // Resolved during OnPluginLoadHooks; 0 means the pattern missed on this build.
+    uintptr_t g_addrAddEntitiesToWave      = 0;
+    uintptr_t g_addrRemoveEntitiesFromWave = 0;
+
+    void ResolvePatterns(IPluginSelf* self, IPluginHookScanner* scanner)
+    {
+        if (!self || !scanner)
+            return;
+
+        // Optional throughout: every miss below degrades one feature and leaves
+        // the plugin loaded, which is what the old scan-at-init path did. The
+        // loader still lists each miss for the user.
+        g_addrAddEntitiesToWave = scanner->ResolveOptional(
+            self, "UCrWaveSubsystem::AddEntitiesToWave", WaveOptimiserSignatures::AddEntitiesToWave);
+        g_addrRemoveEntitiesFromWave = scanner->ResolveOptional(
+            self, "UCrWaveSubsystem::RemoveEntitiesFromWave", WaveOptimiserSignatures::RemoveEntitiesFromWave);
+
+
+        // Resolve GetSubsystem<UMassEntitySubsystem> for the heat-reset tool.
+        uintptr_t getSubsysFn = scanner->ResolveOptional(
+            self, "UWorld::GetSubsystem<UMassEntitySubsystem>", WaveOptimiserSignatures::GetSubsystemMassEntity_Fn);
+        if (getSubsysFn)
+        {
+            uintptr_t callSite = getSubsysFn + WaveOptimiserSignatures::GetSubsystemMassEntity_CallOffset;
+            int32_t rel = *reinterpret_cast<int32_t*>(callSite + 1);
+            g_getSubsystemFn = reinterpret_cast<GetSubsystemMassEntity_t>(callSite + 5 + rel);
+            LOG_DEBUG("WaveOptimiser: GetSubsystem<UMassEntitySubsystem> resolved at 0x%llX",
+                static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_getSubsystemFn)));
+        }
+        else
+            LOG_WARN("WaveOptimiser: GetSubsystemMassEntity_Fn unresolved - heat reset button will be inert");
+
+        // Resolve FMassEntityManager::InternalGetFragmentDataPtr via xref in
+        // SynchronizeActorStateToMass. Non-fatal — heat injection and reset button
+        // will be inert if missing.
+        uintptr_t fragXRef = scanner->ResolveOptional(
+            self, "FMassEntityManager::InternalGetFragmentDataPtr (xref)", WaveOptimiserSignatures::InternalGetFragmentDataPtr_XRef);
+        if (fragXRef)
+        {
+            uintptr_t callSite = fragXRef + WaveOptimiserSignatures::InternalGetFragmentDataPtr_CallOffset;
+            int32_t rel = *reinterpret_cast<int32_t*>(callSite + 1);
+            g_getFragmentDataPtr = reinterpret_cast<GetFragmentDataPtr_t>(callSite + 5 + rel);
+            LOG_DEBUG("WaveOptimiser: InternalGetFragmentDataPtr resolved at 0x%llX",
+                static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_getFragmentDataPtr)));
+        }
+        else
+            LOG_WARN("WaveOptimiser: InternalGetFragmentDataPtr_XRef unresolved - heat injection and reset will be inert");
+
+        uintptr_t isEntityValidAddr = scanner->ResolveOptional(
+            self, "FMassEntityManager::IsEntityValid", WaveOptimiserSignatures::IsEntityValid);
+        if (isEntityValidAddr)
+        {
+            g_isEntityValid = reinterpret_cast<IsEntityValid_t>(isEntityValidAddr);
+            LOG_DEBUG("WaveOptimiser: FMassEntityManager::IsEntityValid resolved at 0x%llX",
+                static_cast<unsigned long long>(isEntityValidAddr));
+        }
+        else
+            LOG_WARN("WaveOptimiser: FMassEntityManager::IsEntityValid unresolved - stale-entity checks will fail closed (skip)");
+
+        // Resolve UMassSignalSubsystem::SignalEntities - lets wave-applied heat
+        // notify UCrMassTemperatureSignalProcessor the same way the reset-all-heat
+        // tool does (see FireTemperatureSignal above). Non-fatal if missing: heat
+        // injection still runs, it just won't refresh the temperature prompt.
+        uintptr_t signalEntitiesAddr = scanner->ResolveOptional(
+            self, "UMassSignalSubsystem::SignalEntities", WaveOptimiserSignatures::SignalEntities);
+        if (signalEntitiesAddr)
+        {
+            g_signalEntities = reinterpret_cast<SignalEntities_t>(signalEntitiesAddr);
+            LOG_DEBUG("WaveOptimiser: UMassSignalSubsystem::SignalEntities resolved at 0x%llX",
+                static_cast<unsigned long long>(signalEntitiesAddr));
+        }
+        else
+            LOG_WARN("WaveOptimiser: SignalEntities unresolved - wave heat injection won't notify the temperature signal processor");
+
+        // Resolve UCrBuildingFunctionLibrary::AddTemperatureToEntity. Without it
+        // we fall back to writing CurrentHeat directly, which applies heat but
+        // never adds FCrMassTemperatureUpdatingTag - so heated buildings stay
+        // overheated until something else re-tags them (in practice: the player
+        // moving far enough to trigger OnWeatherRegionsChanged). Warn loudly,
+        // because the failure mode is a slow-burn gameplay bug, not a crash.
+        uintptr_t addTempAddr = scanner->ResolveOptional(
+            self, "UCrBuildingFunctionLibrary::AddTemperatureToEntity", WaveOptimiserSignatures::AddTemperatureToEntity);
+        if (addTempAddr)
+        {
+            g_addTemperatureToEntity = reinterpret_cast<AddTemperatureToEntity_t>(addTempAddr);
+            LOG_DEBUG("WaveOptimiser: UCrBuildingFunctionLibrary::AddTemperatureToEntity resolved at 0x%llX",
+                static_cast<unsigned long long>(addTempAddr));
+        }
+        else
+            LOG_WARN("WaveOptimiser: AddTemperatureToEntity unresolved - falling back to direct CurrentHeat writes. "
+                "Heated buildings will NOT cool down on their own (no FCrMassTemperatureUpdatingTag) until the "
+                "player moves enough to trigger a weather-region change.");
+    }
+
     bool Init(IPluginSelf* self)
     {
-        IPluginScanner* scanner = self->scanner;
-
-        LOG_DEBUG("WaveOptimiser: scanning for AddEntitiesToWave...");
-
-        uintptr_t addAddr = scanner->FindPatternInMainModule(WaveOptimiserSignatures::AddEntitiesToWave);
+        const uintptr_t addAddr = g_addrAddEntitiesToWave;
         if (!addAddr)
         {
-            LOG_WARN("WaveOptimiser: AddEntitiesToWave pattern not found - wave batching not installed");
+            LOG_WARN("WaveOptimiser: AddEntitiesToWave unresolved - wave batching not installed");
             return false;
         }
 
-        LOG_DEBUG("WaveOptimiser: scanning for RemoveEntitiesFromWave...");
-
-        uintptr_t removeAddr = scanner->FindPatternInMainModule(WaveOptimiserSignatures::RemoveEntitiesFromWave);
+        const uintptr_t removeAddr = g_addrRemoveEntitiesFromWave;
         if (!removeAddr)
         {
-            LOG_WARN("WaveOptimiser: RemoveEntitiesFromWave pattern not found - wave batching not installed "
+            LOG_WARN("WaveOptimiser: RemoveEntitiesFromWave unresolved - wave batching not installed "
                 "(refusing to hook Add alone, that would desync EntitiesInWave ordering)");
             return false;
         }
 
-        
         g_hook = self->hooks->Hooks->Install(
             addAddr,
             reinterpret_cast<void*>(&Detour_AddEntitiesToWave),
@@ -647,76 +734,6 @@ namespace WaveOptimiser
             return false;
         }
         
-
-        // Resolve GetSubsystem<UMassEntitySubsystem> for the heat-reset tool.
-        uintptr_t getSubsysFn = scanner->FindPatternInMainModule(WaveOptimiserSignatures::GetSubsystemMassEntity_Fn);
-        if (getSubsysFn)
-        {
-            uintptr_t callSite = getSubsysFn + WaveOptimiserSignatures::GetSubsystemMassEntity_CallOffset;
-            int32_t rel = *reinterpret_cast<int32_t*>(callSite + 1);
-            g_getSubsystemFn = reinterpret_cast<GetSubsystemMassEntity_t>(callSite + 5 + rel);
-            LOG_DEBUG("WaveOptimiser: GetSubsystem<UMassEntitySubsystem> resolved at 0x%llX",
-                static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_getSubsystemFn)));
-        }
-        else
-            LOG_WARN("WaveOptimiser: GetSubsystemMassEntity_Fn not found - heat reset button will be inert");
-
-        // Resolve FMassEntityManager::InternalGetFragmentDataPtr via xref in
-        // SynchronizeActorStateToMass. Non-fatal — heat injection and reset button
-        // will be inert if missing.
-        uintptr_t fragXRef = scanner->FindPatternInMainModule(WaveOptimiserSignatures::InternalGetFragmentDataPtr_XRef);
-        if (fragXRef)
-        {
-            uintptr_t callSite = fragXRef + WaveOptimiserSignatures::InternalGetFragmentDataPtr_CallOffset;
-            int32_t rel = *reinterpret_cast<int32_t*>(callSite + 1);
-            g_getFragmentDataPtr = reinterpret_cast<GetFragmentDataPtr_t>(callSite + 5 + rel);
-            LOG_DEBUG("WaveOptimiser: InternalGetFragmentDataPtr resolved at 0x%llX",
-                static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_getFragmentDataPtr)));
-        }
-        else
-            LOG_WARN("WaveOptimiser: InternalGetFragmentDataPtr_XRef not found - heat injection and reset will be inert");
-
-        uintptr_t isEntityValidAddr = scanner->FindPatternInMainModule(WaveOptimiserSignatures::IsEntityValid);
-        if (isEntityValidAddr)
-        {
-            g_isEntityValid = reinterpret_cast<IsEntityValid_t>(isEntityValidAddr);
-            LOG_DEBUG("WaveOptimiser: FMassEntityManager::IsEntityValid resolved at 0x%llX",
-                static_cast<unsigned long long>(isEntityValidAddr));
-        }
-        else
-            LOG_WARN("WaveOptimiser: FMassEntityManager::IsEntityValid not found - stale-entity checks will fail closed (skip)");
-
-        // Resolve UMassSignalSubsystem::SignalEntities - lets wave-applied heat
-        // notify UCrMassTemperatureSignalProcessor the same way the reset-all-heat
-        // tool does (see FireTemperatureSignal above). Non-fatal if missing: heat
-        // injection still runs, it just won't refresh the temperature prompt.
-        uintptr_t signalEntitiesAddr = scanner->FindPatternInMainModule(WaveOptimiserSignatures::SignalEntities);
-        if (signalEntitiesAddr)
-        {
-            g_signalEntities = reinterpret_cast<SignalEntities_t>(signalEntitiesAddr);
-            LOG_DEBUG("WaveOptimiser: UMassSignalSubsystem::SignalEntities resolved at 0x%llX",
-                static_cast<unsigned long long>(signalEntitiesAddr));
-        }
-        else
-            LOG_WARN("WaveOptimiser: SignalEntities not found - wave heat injection won't notify the temperature signal processor");
-
-        // Resolve UCrBuildingFunctionLibrary::AddTemperatureToEntity. Without it
-        // we fall back to writing CurrentHeat directly, which applies heat but
-        // never adds FCrMassTemperatureUpdatingTag - so heated buildings stay
-        // overheated until something else re-tags them (in practice: the player
-        // moving far enough to trigger OnWeatherRegionsChanged). Warn loudly,
-        // because the failure mode is a slow-burn gameplay bug, not a crash.
-        uintptr_t addTempAddr = scanner->FindPatternInMainModule(WaveOptimiserSignatures::AddTemperatureToEntity);
-        if (addTempAddr)
-        {
-            g_addTemperatureToEntity = reinterpret_cast<AddTemperatureToEntity_t>(addTempAddr);
-            LOG_DEBUG("WaveOptimiser: UCrBuildingFunctionLibrary::AddTemperatureToEntity resolved at 0x%llX",
-                static_cast<unsigned long long>(addTempAddr));
-        }
-        else
-            LOG_WARN("WaveOptimiser: AddTemperatureToEntity not found - falling back to direct CurrentHeat writes. "
-                "Heated buildings will NOT cool down on their own (no FCrMassTemperatureUpdatingTag) until the "
-                "player moves enough to trigger a weather-region change.");
 
         // Cache UScriptStruct* for the fragment types by name from GObjects.
         // Both structs may not be registered yet this early; ResolveFragmentStructs

@@ -14,6 +14,11 @@ namespace WaveOptimiser
     // of the pair would let the real (synchronous) Remove run ahead of
     // queued Adds and corrupt EntitiesInWave membership / wave-stage tag
     // state, which is what drives heat processing downstream.
+    // Resolves every AOB this module needs. Callable only from the plugin's
+    // OnPluginLoadHooks export -- the loader refuses scans made anywhere else,
+    // and nothing may be detoured until PluginInit.
+    void ResolvePatterns(IPluginSelf* self, IPluginHookScanner* scanner);
+
     bool Init(IPluginSelf* self);
 
     void Shutdown(IPluginSelf* self);

@@ -229,12 +229,16 @@ namespace HeatSampler
         }
     }
 
-    void Init(IPluginSelf* self)
+    void ResolvePatterns(IPluginSelf* self, IPluginHookScanner* scanner)
     {
-        IPluginScanner* scanner = self->scanner;
+        if (!self || !scanner)
+            return;
 
+        // Optional throughout: every miss below degrades one tool and leaves the
+        // rest of the plugin working, which is what the old scan-at-init path did.
         // AOB shared with WAILA plugin — FCrMassActorReplicationHelper ctor.
-        uintptr_t addr = scanner->FindPatternInMainModule(
+        uintptr_t addr = scanner->ResolveOptional(
+            self, "FCrMassActorReplicationHelper::FCrMassActorReplicationHelper",
             "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 33 ED "
             "48 8D 05 ?? ?? ?? ?? ?? ?? ?? 48 8B DA");
         if (addr)
@@ -244,9 +248,10 @@ namespace HeatSampler
                 static_cast<unsigned long long>(addr));
         }
         else
-            LOG_WARN("HeatSampler: FCrMassActorReplicationHelper ctor not found - heat sampling inactive");
+            LOG_WARN("HeatSampler: FCrMassActorReplicationHelper ctor unresolved - heat sampling inactive");
 
-        uintptr_t entityFromActorAddr = scanner->FindPatternInMainModule(
+        uintptr_t entityFromActorAddr = scanner->ResolveOptional(
+            self, "FMassActorManager::GetEntityHandleFromActor",
             "4C 89 44 24 ?? 53 55 57 41 55 41 56 48 83 EC ?? 49 8B F8");
         if (entityFromActorAddr)
         {
@@ -255,9 +260,10 @@ namespace HeatSampler
                 static_cast<unsigned long long>(entityFromActorAddr));
         }
         else
-            LOG_WARN("HeatSampler: FMassActorManager::GetEntityHandleFromActor not found - heat sampling inactive");
+            LOG_WARN("HeatSampler: FMassActorManager::GetEntityHandleFromActor unresolved - heat sampling inactive");
 
-        uintptr_t signalEntitiesAddr = scanner->FindPatternInMainModule(WaveOptimiserSignatures::SignalEntities);
+        uintptr_t signalEntitiesAddr = scanner->ResolveOptional(
+            self, "UMassSignalSubsystem::SignalEntities", WaveOptimiserSignatures::SignalEntities);
         if (signalEntitiesAddr)
         {
             s_signalEntities = reinterpret_cast<SignalEntities_t>(signalEntitiesAddr);
@@ -265,7 +271,7 @@ namespace HeatSampler
                 static_cast<unsigned long long>(signalEntitiesAddr));
         }
         else
-            LOG_WARN("HeatSampler: SignalEntities not found - reset-all-heat will zero heat but won't notify the temperature signal processor");
+            LOG_WARN("HeatSampler: SignalEntities unresolved - reset-all-heat will zero heat but won't notify the temperature signal processor");
     }
 
     void Shutdown()
@@ -410,7 +416,7 @@ namespace HeatSampler
 // Server builds: no local player, no raycast. All stubs.
 namespace HeatSampler
 {
-    void   Init(IPluginSelf*) {}
+    void   ResolvePatterns(IPluginSelf*, IPluginHookScanner*) {}
     void   Shutdown()         {}
     void   OnTick(float)      {}
     void   SetEnabled(bool)   {}

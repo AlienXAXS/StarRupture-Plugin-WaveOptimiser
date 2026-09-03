@@ -17,9 +17,11 @@ namespace HeatSampler
         char    actorName[128] = {};
     };
 
-    // Scans for FCrMassActorReplicationHelper ctor used to resolve actor -> entity handle.
+    // Resolves FCrMassActorReplicationHelper ctor (used to map actor -> entity
+    // handle) and friends. Callable only from the plugin's OnPluginLoadHooks
+    // export -- the loader refuses scans made anywhere else.
     // No-op on server builds (stubs return safe defaults).
-    void Init(IPluginSelf* self);
+    void ResolvePatterns(IPluginSelf* self, IPluginHookScanner* scanner);
     void Shutdown();
 
     // Must be called each game tick (registered via RegisterOnTick).
