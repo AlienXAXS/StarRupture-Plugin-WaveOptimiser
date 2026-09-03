@@ -9,8 +9,7 @@ namespace WaveOptimiserSignatures
     // (this) - matches our __fastcall(this, EntitiesToAdd, WaveType) detour
     // signature in wave_optimiser.cpp.
     static const char* AddEntitiesToWave =
-        "48 89 5C 24 ?? 48 89 54 24 ?? 55 56 57 41 54 41 55 41 56 41 57 "
-        "48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 48 8B DA 4C 8B E9";
+        "48 89 5C 24 ?? 48 89 54 24 ?? 48 89 4C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 48 8B DA";
 
     // UE5 engine function containing a call to UWorld::GetSubsystem<UMassEntitySubsystem>.
     // Stable across game updates because it lives in engine code, not game code.
