@@ -630,21 +630,58 @@ namespace WaveOptimiser
         else
             LOG_WARN("WaveOptimiser: GetSubsystemMassEntity_Fn unresolved - heat reset button will be inert");
 
-        // Resolve FMassEntityManager::InternalGetFragmentDataPtr via xref in
-        // SynchronizeActorStateToMass. Non-fatal — heat injection and reset button
-        // will be inert if missing.
-        uintptr_t fragXRef = scanner->ResolveOptional(
-            self, "FMassEntityManager::InternalGetFragmentDataPtr (xref)", WaveOptimiserSignatures::InternalGetFragmentDataPtr_XRef);
-        if (fragXRef)
+        // Resolve UCrBuildingFunctionLibrary::AddTemperatureToEntity. Without it
+        // we fall back to writing CurrentHeat directly, which applies heat but
+        // never adds FCrMassTemperatureUpdatingTag - so heated buildings stay
+        // overheated until something else re-tags them (in practice: the player
+        // moving far enough to trigger OnWeatherRegionsChanged). Warn loudly,
+        // because the failure mode is a slow-burn gameplay bug, not a crash.
+        //
+        // Resolved before InternalGetFragmentDataPtr below, which is derived from
+        // a call site inside it.
+        uintptr_t addTempAddr = scanner->ResolveOptional(
+            self, "UCrBuildingFunctionLibrary::AddTemperatureToEntity", WaveOptimiserSignatures::AddTemperatureToEntity);
+        if (addTempAddr)
         {
-            uintptr_t callSite = fragXRef + WaveOptimiserSignatures::InternalGetFragmentDataPtr_CallOffset;
-            int32_t rel = *reinterpret_cast<int32_t*>(callSite + 1);
-            g_getFragmentDataPtr = reinterpret_cast<GetFragmentDataPtr_t>(callSite + 5 + rel);
-            LOG_DEBUG("WaveOptimiser: InternalGetFragmentDataPtr resolved at 0x%llX",
-                static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_getFragmentDataPtr)));
+            g_addTemperatureToEntity = reinterpret_cast<AddTemperatureToEntity_t>(addTempAddr);
+            LOG_DEBUG("WaveOptimiser: UCrBuildingFunctionLibrary::AddTemperatureToEntity resolved at 0x%llX",
+                static_cast<unsigned long long>(addTempAddr));
         }
         else
-            LOG_WARN("WaveOptimiser: InternalGetFragmentDataPtr_XRef unresolved - heat injection and reset will be inert");
+            LOG_WARN("WaveOptimiser: AddTemperatureToEntity unresolved - falling back to direct CurrentHeat writes. "
+                "Heated buildings will NOT cool down on their own (no FCrMassTemperatureUpdatingTag) until the "
+                "player moves enough to trigger a weather-region change.");
+
+        // Resolve FMassEntityManager::InternalGetFragmentDataPtr from the call to
+        // it inside AddTemperatureToEntity. Non-fatal - heat injection and reset
+        // button will be inert if missing. See the long note in
+        // wave_optimiser_signatures.h for why this is derived from a call site
+        // rather than scanned directly (its two neighbours are byte-identical,
+        // and one of them hard-asserts).
+        //
+        // The 0xE8 opcode check is load-bearing: without it a shifted offset
+        // yields a plausible-looking non-null pointer that passes every guard and
+        // faults only at call time, which is precisely how this broke before.
+        if (addTempAddr)
+        {
+            uintptr_t callSite = addTempAddr + WaveOptimiserSignatures::InternalGetFragmentDataPtr_CallOffsetFromAddTemp;
+            if (*reinterpret_cast<const uint8_t*>(callSite) == 0xE8)
+            {
+                int32_t rel = *reinterpret_cast<int32_t*>(callSite + 1);
+                g_getFragmentDataPtr = reinterpret_cast<GetFragmentDataPtr_t>(callSite + 5 + rel);
+                LOG_DEBUG("WaveOptimiser: InternalGetFragmentDataPtr resolved at 0x%llX",
+                    static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_getFragmentDataPtr)));
+            }
+            else
+                LOG_WARN("WaveOptimiser: expected a call at AddTemperatureToEntity+0x%zX but found opcode 0x%02X - "
+                    "the game layout has shifted. Leaving InternalGetFragmentDataPtr unresolved (heat injection and "
+                    "reset inert) rather than calling a garbage address.",
+                    WaveOptimiserSignatures::InternalGetFragmentDataPtr_CallOffsetFromAddTemp,
+                    *reinterpret_cast<const uint8_t*>(callSite));
+        }
+        else
+            LOG_WARN("WaveOptimiser: InternalGetFragmentDataPtr unresolved (no AddTemperatureToEntity anchor) - "
+                "heat injection and reset will be inert");
 
         uintptr_t isEntityValidAddr = scanner->ResolveOptional(
             self, "FMassEntityManager::IsEntityValid", WaveOptimiserSignatures::IsEntityValid);
@@ -672,24 +709,6 @@ namespace WaveOptimiser
         else
             LOG_WARN("WaveOptimiser: SignalEntities unresolved - wave heat injection won't notify the temperature signal processor");
 
-        // Resolve UCrBuildingFunctionLibrary::AddTemperatureToEntity. Without it
-        // we fall back to writing CurrentHeat directly, which applies heat but
-        // never adds FCrMassTemperatureUpdatingTag - so heated buildings stay
-        // overheated until something else re-tags them (in practice: the player
-        // moving far enough to trigger OnWeatherRegionsChanged). Warn loudly,
-        // because the failure mode is a slow-burn gameplay bug, not a crash.
-        uintptr_t addTempAddr = scanner->ResolveOptional(
-            self, "UCrBuildingFunctionLibrary::AddTemperatureToEntity", WaveOptimiserSignatures::AddTemperatureToEntity);
-        if (addTempAddr)
-        {
-            g_addTemperatureToEntity = reinterpret_cast<AddTemperatureToEntity_t>(addTempAddr);
-            LOG_DEBUG("WaveOptimiser: UCrBuildingFunctionLibrary::AddTemperatureToEntity resolved at 0x%llX",
-                static_cast<unsigned long long>(addTempAddr));
-        }
-        else
-            LOG_WARN("WaveOptimiser: AddTemperatureToEntity unresolved - falling back to direct CurrentHeat writes. "
-                "Heated buildings will NOT cool down on their own (no FCrMassTemperatureUpdatingTag) until the "
-                "player moves enough to trigger a weather-region change.");
     }
 
     bool Init(IPluginSelf* self)

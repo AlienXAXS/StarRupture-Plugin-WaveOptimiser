@@ -21,14 +21,38 @@ namespace WaveOptimiserSignatures
         "48 89 5C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 41 56 48 83 EC ?? ?? ?? ?? 4C 8B F1 48 8B CA";
     static const size_t GetSubsystemMassEntity_CallOffset = 0x2F;
 
-    // XRef site that calls FMassEntityManager::InternalGetFragmentDataPtr inside
-    // UMassEnemyRepresentationSubsystem::SynchronizeActorStateToMass. Scan to
-    // function start, add CallOffset to reach the call instruction, resolve
-    // rel32 to get InternalGetFragmentDataPtr. Signature:
+    // FMassEntityManager::InternalGetFragmentDataPtr:
     //   void* InternalGetFragmentDataPtr(FMassEntityManager*, FMassEntityHandle, const UScriptStruct*)
-    static const char* InternalGetFragmentDataPtr_XRef =
-        "40 53 56 41 56 48 81 EC ?? ?? ?? ?? 48 83 B9 ?? ?? ?? ?? ?? 4D 8B F0";
-    static const size_t InternalGetFragmentDataPtr_CallOffset = 0x27D;
+    // Resolved as the rel32 target of the call at AddTemperatureToEntity + this
+    // offset, NOT by its own AOB and NOT via a separate xref function.
+    //
+    // Why not its own AOB: it is one of three adjacent, near-identical template
+    // instantiations - InternalGetConstSharedFragmentPtr, InternalGetFragmentDataChecked
+    // and InternalGetFragmentDataPtr sit back to back and share a byte-identical
+    // prologue. Every candidate pattern tried (including one extended past the
+    // assert-line immediate) matched all three. Picking the wrong one is not a
+    // soft failure: InternalGetFragmentDataChecked hard-asserts and kills the
+    // game on any entity that lacks the fragment, which is exactly the case this
+    // plugin relies on failing softly.
+    //
+    // Why not the old xref: this used to be resolved from a call site inside
+    // UMassEnemyRepresentationSubsystem::SynchronizeActorStateToMass at a
+    // hardcoded +0x27D. That function is ~2.3KB of inlined fragment lookups, and
+    // the offset silently rotted - in the 2026-09-04 build +0x27D lands on
+    // `mov rdx, rbx`, six bytes shy of a call to a *different* function
+    // (InternalGetConstSharedFragmentPtr). The old code read a rel32 from there
+    // with no opcode check, so it produced a non-null garbage pointer that passed
+    // every null check and only faulted when finally called - surfacing as
+    // "can't find the heat fragment" everywhere, because the sampler's
+    // __try/__except degrades the access violation to "no fragment".
+    //
+    // AddTemperatureToEntity is a much safer anchor: it is 0xB5 bytes total, its
+    // AOB above is already required for heat writes anyway, and its single call
+    // to InternalGetFragmentDataPtr is unambiguous - the caller passes
+    // FCrMassTemperatureFragment::StaticStruct() and null-checks the result, so
+    // it cannot be the Checked variant. Resolution MUST verify the 0xE8 opcode
+    // and fail loudly rather than trusting the offset (see ResolvePatterns).
+    static const size_t InternalGetFragmentDataPtr_CallOffsetFromAddTemp = 0x40;
 
     // Note: the fragment UScriptStruct*s (FCrMassTemperatureFragment,
     // FMassActorFragment) are intentionally NOT resolved here. Their
