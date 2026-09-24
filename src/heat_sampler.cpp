@@ -229,6 +229,23 @@ namespace HeatSampler
         }
     }
 
+    // All three addresses are called directly, so each declares
+    // PLUGIN_SCAN_FUNCTION_START and the loader checks the match against the
+    // executable's exception directory before handing it back. Two of these
+    // patterns are short, ordinary prologues, which is exactly the shape that
+    // can match plausible bytes in the wrong function.
+    static uintptr_t ResolveFunction(IPluginSelf* self, IPluginHookScanner* scanner,
+        const char* hookName, const char* pattern)
+    {
+        PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
+        req.hookName = hookName;
+        req.pattern  = pattern;
+        req.kind     = PLUGIN_SCAN_FUNCTION_START;
+        req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
+
+        return scanner->Resolve(self, &req);
+    }
+
     void ResolvePatterns(IPluginSelf* self, IPluginHookScanner* scanner)
     {
         if (!self || !scanner)
@@ -236,9 +253,9 @@ namespace HeatSampler
 
         // Optional throughout: every miss below degrades one tool and leaves the
         // rest of the plugin working, which is what the old scan-at-init path did.
-        // AOB shared with WAILA plugin — FCrMassActorReplicationHelper ctor.
-        uintptr_t addr = scanner->ResolveOptional(
-            self, "FCrMassActorReplicationHelper::FCrMassActorReplicationHelper",
+        // AOB shared with WAILA plugin - FCrMassActorReplicationHelper ctor.
+        uintptr_t addr = ResolveFunction(self, scanner,
+            "FCrMassActorReplicationHelper::FCrMassActorReplicationHelper",
             "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 33 ED "
             "48 8D 05 ?? ?? ?? ?? ?? ?? ?? 48 8B DA");
         if (addr)
@@ -250,8 +267,8 @@ namespace HeatSampler
         else
             LOG_WARN("HeatSampler: FCrMassActorReplicationHelper ctor unresolved - heat sampling inactive");
 
-        uintptr_t entityFromActorAddr = scanner->ResolveOptional(
-            self, "FMassActorManager::GetEntityHandleFromActor",
+        uintptr_t entityFromActorAddr = ResolveFunction(self, scanner,
+            "FMassActorManager::GetEntityHandleFromActor",
             "4C 89 44 24 ?? 53 55 57 41 55 41 56 48 83 EC ?? 49 8B F8");
         if (entityFromActorAddr)
         {
@@ -262,8 +279,8 @@ namespace HeatSampler
         else
             LOG_WARN("HeatSampler: FMassActorManager::GetEntityHandleFromActor unresolved - heat sampling inactive");
 
-        uintptr_t signalEntitiesAddr = scanner->ResolveOptional(
-            self, "UMassSignalSubsystem::SignalEntities", WaveOptimiserSignatures::SignalEntities);
+        uintptr_t signalEntitiesAddr = ResolveFunction(self, scanner,
+            "UMassSignalSubsystem::SignalEntities", WaveOptimiserSignatures::SignalEntities);
         if (signalEntitiesAddr)
         {
             s_signalEntities = reinterpret_cast<SignalEntities_t>(signalEntitiesAddr);

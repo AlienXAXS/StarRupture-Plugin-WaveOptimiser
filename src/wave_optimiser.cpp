@@ -602,6 +602,43 @@ namespace WaveOptimiser
     uintptr_t g_addrAddEntitiesToWave      = 0;
     uintptr_t g_addrRemoveEntitiesFromWave = 0;
 
+    // Every address this file resolves is a function entry -- two get detours,
+    // the rest are called -- so each request declares
+    // PLUGIN_SCAN_FUNCTION_START. The loader checks the match against the
+    // executable's exception directory, which is what tells "the pattern
+    // matched" apart from "the pattern matched the right function".
+    static uintptr_t ResolveFunction(IPluginSelf* self, IPluginHookScanner* scanner,
+        const char* hookName, const char* pattern)
+    {
+        PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
+        req.hookName = hookName;
+        req.pattern  = pattern;
+        req.kind     = PLUGIN_SCAN_FUNCTION_START;
+        req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
+
+        return scanner->Resolve(self, &req);
+    }
+
+    // The same, for a pattern that anchors on a function whose body contains a
+    // CALL to the address actually wanted. followRel32At names the byte holding
+    // the E8/E9; the loader checks that opcode is really there, decodes the
+    // rel32, confirms the target lands inside the image, and then applies the
+    // kind check to the TARGET rather than to the anchor. That is the whole of
+    // what the hand-rolled decodes below used to do, except that a failure is
+    // now a named line in the loader's report instead of a warning in our log.
+    static uintptr_t ResolveCalleeOf(IPluginSelf* self, IPluginHookScanner* scanner,
+        const char* hookName, const char* pattern, int32_t callOffset)
+    {
+        PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
+        req.hookName      = hookName;
+        req.pattern       = pattern;
+        req.kind          = PLUGIN_SCAN_FUNCTION_START;
+        req.flags         = PLUGIN_SCAN_FLAG_OPTIONAL | PLUGIN_SCAN_FLAG_FOLLOW_REL32;
+        req.followRel32At = callOffset;
+
+        return scanner->Resolve(self, &req);
+    }
+
     void ResolvePatterns(IPluginSelf* self, IPluginHookScanner* scanner)
     {
         if (!self || !scanner)
@@ -610,22 +647,25 @@ namespace WaveOptimiser
         // Optional throughout: every miss below degrades one feature and leaves
         // the plugin loaded, which is what the old scan-at-init path did. The
         // loader still lists each miss for the user.
-        g_addrAddEntitiesToWave = scanner->ResolveOptional(
-            self, "UCrWaveSubsystem::AddEntitiesToWave", WaveOptimiserSignatures::AddEntitiesToWave);
-        g_addrRemoveEntitiesFromWave = scanner->ResolveOptional(
-            self, "UCrWaveSubsystem::RemoveEntitiesFromWave", WaveOptimiserSignatures::RemoveEntitiesFromWave);
+        g_addrAddEntitiesToWave = ResolveFunction(self, scanner,
+            "UCrWaveSubsystem::AddEntitiesToWave", WaveOptimiserSignatures::AddEntitiesToWave);
+        g_addrRemoveEntitiesFromWave = ResolveFunction(self, scanner,
+            "UCrWaveSubsystem::RemoveEntitiesFromWave", WaveOptimiserSignatures::RemoveEntitiesFromWave);
 
 
-        // Resolve GetSubsystem<UMassEntitySubsystem> for the heat-reset tool.
-        uintptr_t getSubsysFn = scanner->ResolveOptional(
-            self, "UWorld::GetSubsystem<UMassEntitySubsystem>", WaveOptimiserSignatures::GetSubsystemMassEntity_Fn);
-        if (getSubsysFn)
+        // Resolve GetSubsystem<UMassEntitySubsystem> for the heat-reset tool. The
+        // AOB anchors on an engine function that CALLS it; the loader follows
+        // the rel32 at +0x2F and kind-checks what it lands on, where this used
+        // to read the displacement itself and trust whatever came back.
+        const uintptr_t getSubsysAddr = ResolveCalleeOf(self, scanner,
+            "UWorld::GetSubsystem<UMassEntitySubsystem>",
+            WaveOptimiserSignatures::GetSubsystemMassEntity_Fn,
+            static_cast<int32_t>(WaveOptimiserSignatures::GetSubsystemMassEntity_CallOffset));
+        if (getSubsysAddr)
         {
-            uintptr_t callSite = getSubsysFn + WaveOptimiserSignatures::GetSubsystemMassEntity_CallOffset;
-            int32_t rel = *reinterpret_cast<int32_t*>(callSite + 1);
-            g_getSubsystemFn = reinterpret_cast<GetSubsystemMassEntity_t>(callSite + 5 + rel);
+            g_getSubsystemFn = reinterpret_cast<GetSubsystemMassEntity_t>(getSubsysAddr);
             LOG_DEBUG("WaveOptimiser: GetSubsystem<UMassEntitySubsystem> resolved at 0x%llX",
-                static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_getSubsystemFn)));
+                static_cast<unsigned long long>(getSubsysAddr));
         }
         else
             LOG_WARN("WaveOptimiser: GetSubsystemMassEntity_Fn unresolved - heat reset button will be inert");
@@ -639,8 +679,8 @@ namespace WaveOptimiser
         //
         // Resolved before InternalGetFragmentDataPtr below, which is derived from
         // a call site inside it.
-        uintptr_t addTempAddr = scanner->ResolveOptional(
-            self, "UCrBuildingFunctionLibrary::AddTemperatureToEntity", WaveOptimiserSignatures::AddTemperatureToEntity);
+        uintptr_t addTempAddr = ResolveFunction(self, scanner,
+            "UCrBuildingFunctionLibrary::AddTemperatureToEntity", WaveOptimiserSignatures::AddTemperatureToEntity);
         if (addTempAddr)
         {
             g_addTemperatureToEntity = reinterpret_cast<AddTemperatureToEntity_t>(addTempAddr);
@@ -662,29 +702,29 @@ namespace WaveOptimiser
         // The 0xE8 opcode check is load-bearing: without it a shifted offset
         // yields a plausible-looking non-null pointer that passes every guard and
         // faults only at call time, which is precisely how this broke before.
-        if (addTempAddr)
+        // FOLLOW_REL32 makes that check the loader's, so a shifted offset is a
+        // named failure in the report rather than a line in our log that nobody
+        // reads until something faults -- and the target gets the FUNCTION_START
+        // check on top, which the hand-rolled decode never did.
+        //
+        // This re-scans the AddTemperatureToEntity pattern rather than working
+        // from addTempAddr, because followRel32At is measured from the match.
+        // The scan cache makes the second pass free.
+        const uintptr_t fragmentDataPtr = ResolveCalleeOf(self, scanner,
+            "FMassEntityManager::InternalGetFragmentDataPtr",
+            WaveOptimiserSignatures::AddTemperatureToEntity,
+            static_cast<int32_t>(WaveOptimiserSignatures::InternalGetFragmentDataPtr_CallOffsetFromAddTemp));
+        if (fragmentDataPtr)
         {
-            uintptr_t callSite = addTempAddr + WaveOptimiserSignatures::InternalGetFragmentDataPtr_CallOffsetFromAddTemp;
-            if (*reinterpret_cast<const uint8_t*>(callSite) == 0xE8)
-            {
-                int32_t rel = *reinterpret_cast<int32_t*>(callSite + 1);
-                g_getFragmentDataPtr = reinterpret_cast<GetFragmentDataPtr_t>(callSite + 5 + rel);
-                LOG_DEBUG("WaveOptimiser: InternalGetFragmentDataPtr resolved at 0x%llX",
-                    static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_getFragmentDataPtr)));
-            }
-            else
-                LOG_WARN("WaveOptimiser: expected a call at AddTemperatureToEntity+0x%zX but found opcode 0x%02X - "
-                    "the game layout has shifted. Leaving InternalGetFragmentDataPtr unresolved (heat injection and "
-                    "reset inert) rather than calling a garbage address.",
-                    WaveOptimiserSignatures::InternalGetFragmentDataPtr_CallOffsetFromAddTemp,
-                    *reinterpret_cast<const uint8_t*>(callSite));
+            g_getFragmentDataPtr = reinterpret_cast<GetFragmentDataPtr_t>(fragmentDataPtr);
+            LOG_DEBUG("WaveOptimiser: InternalGetFragmentDataPtr resolved at 0x%llX",
+                static_cast<unsigned long long>(fragmentDataPtr));
         }
         else
-            LOG_WARN("WaveOptimiser: InternalGetFragmentDataPtr unresolved (no AddTemperatureToEntity anchor) - "
-                "heat injection and reset will be inert");
+            LOG_WARN("WaveOptimiser: InternalGetFragmentDataPtr unresolved - heat injection and reset will be inert");
 
-        uintptr_t isEntityValidAddr = scanner->ResolveOptional(
-            self, "FMassEntityManager::IsEntityValid", WaveOptimiserSignatures::IsEntityValid);
+        uintptr_t isEntityValidAddr = ResolveFunction(self, scanner,
+            "FMassEntityManager::IsEntityValid", WaveOptimiserSignatures::IsEntityValid);
         if (isEntityValidAddr)
         {
             g_isEntityValid = reinterpret_cast<IsEntityValid_t>(isEntityValidAddr);
@@ -698,8 +738,8 @@ namespace WaveOptimiser
         // notify UCrMassTemperatureSignalProcessor the same way the reset-all-heat
         // tool does (see FireTemperatureSignal above). Non-fatal if missing: heat
         // injection still runs, it just won't refresh the temperature prompt.
-        uintptr_t signalEntitiesAddr = scanner->ResolveOptional(
-            self, "UMassSignalSubsystem::SignalEntities", WaveOptimiserSignatures::SignalEntities);
+        uintptr_t signalEntitiesAddr = ResolveFunction(self, scanner,
+            "UMassSignalSubsystem::SignalEntities", WaveOptimiserSignatures::SignalEntities);
         if (signalEntitiesAddr)
         {
             g_signalEntities = reinterpret_cast<SignalEntities_t>(signalEntitiesAddr);
