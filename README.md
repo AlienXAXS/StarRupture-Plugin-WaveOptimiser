@@ -63,3 +63,9 @@ The output DLL will be placed in `build\<config>\Plugins\`.
 ## Disclaimer
 
 Use at your own risk. The authors are not responsible for any damage caused by using this software.
+
+## Credits
+
+Original mod by [@AlienXAXS](https://github.com/AlienXAXS).
+
+Maintained by [@msantoro12](https://github.com/msantoro12).
