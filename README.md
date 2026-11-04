@@ -32,7 +32,7 @@ Settings live in `Plugins\config\WaveOptimiser.ini`, created on first launch.
 
 3. After the first launch, edit `Plugins\config\WaveOptimiser.ini` and confirm `Enabled=true`.
 
-> **Requires [StarRupture-ModLoader](https://github.com/AlienXAXS/StarRupture-ModLoader)** to be installed first.
+> **Requires [StarRupture-ModLoader](https://github.com/AlienXAXS/StarRupture-ModLoader) v1.23.0 or later** to be installed first.
 
 ---
 
