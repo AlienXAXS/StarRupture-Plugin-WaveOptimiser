@@ -1,6 +1,7 @@
 #include "heat_sampler.h"
 #include "wave_optimiser.h"
 #include "wave_optimiser_signatures.h"
+#include "wave_optimiser_fields.h"
 #include "plugin_config.h"
 #include "plugin_helpers.h"
 
@@ -77,17 +78,17 @@ namespace HeatSampler
 
         APawn* GetLocalPawn()
         {
-            UWorld* world = UWorld::GetWorld();
+            UWorld* world = PluginSdkRuntime::GetWorld();
             if (!world)
                 return nullptr;
             APlayerController* pc = UGameplayStatics::GetPlayerController(world, 0);
             return pc ? pc->Pawn : nullptr;
         }
 
-        // FMassActorManager* lives at offset 0x38 of UMassActorSubsystem - a
+        // FMassActorManager* is held by UMassActorSubsystem as a
         // TSharedPtr<FMassActorManager> in Dumper-7's Pad_38[0x10] region (not a
         // reflected UPROPERTY, but the first 8 bytes of any TSharedPtr are the raw
-        // pointee pointer). UMassActorSubsystem itself is resolved through the SDK's
+        // pointee pointer); the loader's map supplies the offset. UMassActorSubsystem itself is resolved through the SDK's
         // own reflected USubsystemBlueprintLibrary::GetWorldSubsystem - a real
         // UFUNCTION call via ProcessEvent, the same mechanism already used for the
         // UGameplayStatics/UKismetSystemLibrary calls elsewhere in this file - so no
@@ -97,7 +98,7 @@ namespace HeatSampler
             UWorldSubsystem* subsystem = USubsystemBlueprintLibrary::GetWorldSubsystem(world, UMassActorSubsystem::StaticClass());
             if (!subsystem)
                 return nullptr;
-            return *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(subsystem) + 0x38);
+            return WaveOptimiserFields::ActorManagerOf(subsystem);
         }
 
         // UMassSignalSubsystem needs no AOB to locate - like UMassActorSubsystem
@@ -157,8 +158,7 @@ namespace HeatSampler
 
             alignas(8) uint8_t helperBuf[0x18] = {};
             s_helperCtor(helperBuf, actor);
-            uint64_t objectKey = 0;
-            std::memcpy(&objectKey, helperBuf + 0x0C, sizeof(objectKey));
+            const uint64_t objectKey = WaveOptimiserFields::ActorKeyOf(helperBuf);
 
             s_getEntityHandleFromActor(actorManager, &handle, objectKey);
             return handle;
@@ -200,7 +200,8 @@ namespace HeatSampler
                     // rest of the temperature state never re-evaluates. Falls
                     // back to the direct write if the signature didn't resolve.
                     if (!WaveOptimiser::SetEntityHeat(world, handle, 0.0f, worldTimeSeconds))
-                        *static_cast<float*>(fragData) = 0.0f;
+                        if (float* heat = WaveOptimiserFields::CurrentHeat.In(fragData))
+                            *heat = 0.0f;
                     zeroedHandles.push_back(handle);
                 }
             }
@@ -237,13 +238,8 @@ namespace HeatSampler
     static uintptr_t ResolveFunction(IPluginSelf* self, IPluginHookScanner* scanner,
         const char* hookName, const char* pattern)
     {
-        PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
-        req.hookName = hookName;
-        req.pattern  = pattern;
-        req.kind     = PLUGIN_SCAN_FUNCTION_START;
-        req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
-
-        return scanner->Resolve(self, &req);
+        return PluginMap::Function(scanner, self, hookName, pattern,
+            PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
     }
 
     void ResolvePatterns(IPluginSelf* self, IPluginHookScanner* scanner)
@@ -304,10 +300,10 @@ namespace HeatSampler
 
     void OnTick(float /*deltaSeconds*/)
     {
-        if (!s_helperCtor || !s_getEntityHandleFromActor)
+        if (!WaveOptimiserFields::HeatTools.On() || !s_helperCtor || !s_getEntityHandleFromActor)
             return;
 
-        UWorld* world = UWorld::GetWorld();
+        UWorld* world = PluginSdkRuntime::GetWorld();
         if (!world)
             return;
 
@@ -392,8 +388,11 @@ namespace HeatSampler
                     void* fragData = SafeGetFragmentDataPtr(ctx.getFragDataFn, entityMgr, handle, ctx.tempStructPtr);
                     if (fragData)
                     {
-                        result.heat        = *static_cast<float*>(fragData);
-                        result.hasFragment = true;
+                        if (const float* heat = WaveOptimiserFields::CurrentHeat.In(fragData))
+                        {
+                            result.heat        = *heat;
+                            result.hasFragment = true;
+                        }
                     }
                 }
             }

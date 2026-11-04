@@ -303,6 +303,7 @@
     <ClInclude Include="plugin_helpers.h" />
     <ClInclude Include="mass_entity_set.h" />
     <ClInclude Include="wave_optimiser.h" />
+    <ClInclude Include="wave_optimiser_fields.h" />
     <ClInclude Include="wave_optimiser_signatures.h" />
     <ClInclude Include="wave_optimiser_ui.h" />
   </ItemGroup>

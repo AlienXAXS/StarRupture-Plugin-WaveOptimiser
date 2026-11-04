@@ -1,6 +1,7 @@
 #include "wave_optimiser.h"
 #include "mass_entity_set.h"
 #include "wave_optimiser_signatures.h"
+#include "wave_optimiser_fields.h"
 #include "plugin_helpers.h"
 #include "plugin_config.h"
 
@@ -87,9 +88,9 @@ namespace WaveOptimiser
         GetSubsystemMassEntity_t g_getSubsystemFn = nullptr;
 
         // Cached wave subsystem pointer — stable for the session lifetime.
-        // At reset time we read OuterPrivate (+0x20) to get UWorld*, then call
+        // At reset time we read its Outer to get UWorld*, then call
         // g_getSubsystemFn to reach UMassEntitySubsystem* and from there the
-        // entity manager at +0x38.
+        // entity manager.
         void* g_cachedWaveSubsystem = nullptr;
 
         // UMassSignalSubsystem::SignalEntities - see the AOB comment in
@@ -129,14 +130,6 @@ namespace WaveOptimiser
         // AddTemperatureToEntity clamps to that same cap, a game update that
         // retunes it leaves us landing on the new cap rather than overshooting.
         constexpr float kWaveHeat = 600.0f;
-
-        // Byte offset of FCrMassTemperatureFragment::LastUpdateTime. The fragment
-        // is {float CurrentHeat @0x00; FCrThermalHeatModifiers Modifiers @0x08;
-        // TArray<FMassEntityHandle> CoresActiveCooling @0x68; float LastUpdateTime
-        // @0x78} (sizeof 0x80), confirmed in IDA from the temperature processor's
-        // own access - `movss xmm3, dword ptr [rdi+78h]` at 0x147719E65. There is
-        // no engine setter for it, hence the direct write.
-        constexpr size_t kLastUpdateTimeOffset = 0x78;
 
         // Interior-only furnishings that must never be heated. Fragment presence
         // alone is NOT the filter: these get a FCrMassTemperatureFragment from
@@ -302,7 +295,7 @@ namespace WaveOptimiser
         void* massEntitySubsystem = g_getSubsystemFn(world);
         if (!massEntitySubsystem)
             return nullptr;
-        return *reinterpret_cast<void**>(static_cast<uint8_t*>(massEntitySubsystem) + 0x38);
+        return PluginMap::MassEntityManagerOf(massEntitySubsystem);
     }
 
     bool IsEntityValid(void* entityMgr, FMassEntityHandle handle)
@@ -312,13 +305,13 @@ namespace WaveOptimiser
 
     namespace
     {
-        // Reads OuterPrivate (+0x20) off the cached wave subsystem to get UWorld*.
+        // Reads Outer off the cached wave subsystem to get UWorld*.
         // Shared by ResolveEntityManager() and the signal-subsystem resolution below.
         void* ResolveWorld()
         {
             if (!g_cachedWaveSubsystem)
                 return nullptr;
-            return *reinterpret_cast<void**>(static_cast<uint8_t*>(g_cachedWaveSubsystem) + 0x20);
+            return static_cast<SDK::UObject*>(g_cachedWaveSubsystem)->Outer;
         }
 
         // Walks the cached subsystem pointer chain to reach FMassEntityManager*.
@@ -436,8 +429,7 @@ namespace WaveOptimiser
             if (!fragData)
                 return "actor=<no FMassActorFragment>";
 
-            const SDK::FWeakObjectPtr* weakActor = static_cast<const SDK::FWeakObjectPtr*>(fragData);
-            SDK::UObject* actor = weakActor->Get();
+            SDK::UObject* actor = WaveOptimiserFields::ActorOf(fragData);
             if (!actor)
                 return "actor=<none, no live actor for this entity>";
 
@@ -547,8 +539,7 @@ namespace WaveOptimiser
             if (!fragData)
                 return false;
 
-            const SDK::FWeakObjectPtr* weakActor = static_cast<const SDK::FWeakObjectPtr*>(fragData);
-            SDK::UObject* actor = weakActor->Get();
+            SDK::UObject* actor = WaveOptimiserFields::ActorOf(fragData);
             if (!actor)
                 return false;
 
@@ -581,8 +572,10 @@ namespace WaveOptimiser
         // value and pass the difference. It then clamps to
         // BuildingsHeatCapacity, so if the game's own cap is below targetHeat we
         // land on the cap rather than overshooting it - which is what we want.
-        float* heat = static_cast<float*>(GuardedGetFragmentDataPtr(entityMgr, handle, g_temperatureFragStruct));
-        if (!heat)
+        void* fragment = GuardedGetFragmentDataPtr(entityMgr, handle, g_temperatureFragStruct);
+        float* heat = WaveOptimiserFields::CurrentHeat.In(fragment);
+        float* lastUpdateTime = WaveOptimiserFields::LastUpdateTime.In(fragment);
+        if (!heat || !lastUpdateTime)
             return false;
 
         if (!GuardedAddTemperature(world, handle, targetHeat - *heat))
@@ -591,10 +584,8 @@ namespace WaveOptimiser
         // Refresh LastUpdateTime so the cooling processor's first pass charges a
         // normal frame's worth of decay instead of everything since this
         // building last simulated. See the header comment for why this matters.
-        // kLastUpdateTimeOffset is a struct field offset, not a module RVA - it's
-        // identical on client and server, so it doesn't fall foul of the
-        // no-hardcoded-addresses rule.
-        *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(heat) + kLastUpdateTimeOffset) = worldTimeSeconds;
+        // There is no engine setter for LastUpdateTime, hence the direct write.
+        *lastUpdateTime = worldTimeSeconds;
         return true;
     }
 
@@ -606,17 +597,13 @@ namespace WaveOptimiser
     // the rest are called -- so each request declares
     // PLUGIN_SCAN_FUNCTION_START. The loader checks the match against the
     // executable's exception directory, which is what tells "the pattern
-    // matched" apart from "the pattern matched the right function".
+    // matched" apart from "the pattern matched the right function". The
+    // loader's map answers first; the pattern is this plugin's own fallback.
     static uintptr_t ResolveFunction(IPluginSelf* self, IPluginHookScanner* scanner,
         const char* hookName, const char* pattern)
     {
-        PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
-        req.hookName = hookName;
-        req.pattern  = pattern;
-        req.kind     = PLUGIN_SCAN_FUNCTION_START;
-        req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
-
-        return scanner->Resolve(self, &req);
+        return PluginMap::Function(scanner, self, hookName, pattern,
+            PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
     }
 
     // The same, for a pattern that anchors on a function whose body contains a
@@ -629,14 +616,9 @@ namespace WaveOptimiser
     static uintptr_t ResolveCalleeOf(IPluginSelf* self, IPluginHookScanner* scanner,
         const char* hookName, const char* pattern, int32_t callOffset)
     {
-        PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
-        req.hookName      = hookName;
-        req.pattern       = pattern;
-        req.kind          = PLUGIN_SCAN_FUNCTION_START;
-        req.flags         = PLUGIN_SCAN_FLAG_OPTIONAL | PLUGIN_SCAN_FLAG_FOLLOW_REL32;
-        req.followRel32At = callOffset;
-
-        return scanner->Resolve(self, &req);
+        return PluginMap::Function(scanner, self, hookName, pattern,
+            PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL | PLUGIN_SCAN_FLAG_FOLLOW_REL32,
+            0, callOffset);
     }
 
     void ResolvePatterns(IPluginSelf* self, IPluginHookScanner* scanner)
@@ -753,6 +735,12 @@ namespace WaveOptimiser
 
     bool Init(IPluginSelf* self)
     {
+        if (!WaveOptimiserFields::WaveBatching.On())
+        {
+            LOG_WARN("WaveOptimiser: rupture heat batching is off - the game update moved something it needs");
+            return false;
+        }
+
         const uintptr_t addAddr = g_addrAddEntitiesToWave;
         if (!addAddr)
         {
@@ -872,6 +860,9 @@ namespace WaveOptimiser
 
     void OnTick(float /*deltaSeconds*/)
     {
+        if (!WaveOptimiserFields::WaveBatching.On())
+            return;
+
         // Lazily resolve FMassEntityManager* — stable after the first wave fires
         // and g_cachedWaveSubsystem is populated by Detour_AddEntitiesToWave.
         if (!g_cachedEntityMgr && g_cachedWaveSubsystem)
@@ -1026,7 +1017,8 @@ namespace WaveOptimiser
                             continue;
                         }
 
-                        float* heat = static_cast<float*>(GuardedGetFragmentDataPtr(g_cachedEntityMgr, handle, g_temperatureFragStruct));
+                        float* heat = WaveOptimiserFields::CurrentHeat.In(
+                            GuardedGetFragmentDataPtr(g_cachedEntityMgr, handle, g_temperatureFragStruct));
                         if (heat)
                         {
                             const float before = *heat;

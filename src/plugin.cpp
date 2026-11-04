@@ -4,6 +4,7 @@
 #include "wave_optimiser.h"
 #include "wave_optimiser_ui.h"
 #include "heat_sampler.h"
+#include "wave_optimiser_fields.h"
 
 // Global plugin self pointer — stable for the plugin's lifetime, retained from PluginInit
 static IPluginSelf* g_self = nullptr;
@@ -33,7 +34,9 @@ static PluginInfo s_pluginInfo = {
 	"AlienX",
 	"Optimises wave/horde spawning in StarRupture",
 	PLUGIN_INTERFACE_VERSION,
-	WAVE_OPTIMISER_PLUGIN_TARGET
+	WAVE_OPTIMISER_PLUGIN_TARGET,
+	PLUGIN_GAME_BUILT_CL,
+	PLUGIN_MAP_MIGRATED
 };
 
 // The wave queue and the cached FMassEntityManager/subsystem pointers are
@@ -60,12 +63,18 @@ extern "C" {
 	{
 		g_self = self;
 
+		WaveOptimiserFields::DeclareFeatures(self, scanner);
+		WaveOptimiserFields::Resolve(self, scanner);
 		WaveOptimiser::ResolvePatterns(self, scanner);
 		HeatSampler::ResolvePatterns(self, scanner);
 	}
 
 	__declspec(dllexport) bool PluginInit(IPluginSelf* self)
 	{
+		// First, before any early return: off its game build the loader refuses
+		// a plugin whose PluginInit did not take the globals.
+		PluginSdkRuntime::Init(self->hooks);
+
 		// Store the plugin self pointer — valid for the plugin's entire lifetime
 		g_self = self;
 
@@ -80,10 +89,8 @@ extern "C" {
 		if (!WaveOptimiserConfig::Config::IsEnabled())
 			LOG_WARN("Plugin is disabled in config file - wave batching inactive (hooks run in passthrough mode)");
 
-		LOG_DEBUG("Config: Enabled=%s MaxEntitiesPerTick=%d ShowDebugPanel=%s",
-			WaveOptimiserConfig::Config::IsEnabled() ? "true" : "false",
-			WaveOptimiserConfig::Config::GetMaxEntitiesPerTick(),
-			WaveOptimiserConfig::Config::GetShowDebugPanel() ? "true" : "false");
+		LOG_DEBUG("Config: Enabled=%s",
+			WaveOptimiserConfig::Config::IsEnabled() ? "true" : "false");
 
 		// Hooks and HeatSampler are installed regardless of the enabled toggle -
 		// the detours themselves check Config::IsEnabled() per-call and pass

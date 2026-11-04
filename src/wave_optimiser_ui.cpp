@@ -3,6 +3,7 @@
 #include "heat_sampler.h"
 #include "plugin_helpers.h"
 #include "plugin_config.h"
+#include "wave_optimiser_fields.h"
 
 #include <cstdio>
 #include <cstring>
@@ -29,8 +30,15 @@ namespace WaveOptimiserUI
             std::snprintf(line, sizeof(line), "Queue depth: %zu", stats.queueDepth);
             imgui->Text(line);
 
-            std::snprintf(line, sizeof(line), "Max entities per tick: %d", WaveOptimiserConfig::Config::GetMaxEntitiesPerTick());
-            imgui->Text(line);
+            if (WaveOptimiserFields::WaveBatching.On())
+            {
+                std::snprintf(line, sizeof(line), "Max entities per tick: %d", WaveOptimiserConfig::Config::GetMaxEntitiesPerTick());
+                imgui->Text(line);
+            }
+            else
+            {
+                imgui->TextDisabled("Rupture heat batching is off: the game update moved something it needs");
+            }
 
             std::snprintf(line, sizeof(line), "Last wave type: %u", static_cast<unsigned>(stats.lastWaveType));
             imgui->Text(line);
@@ -50,15 +58,19 @@ namespace WaveOptimiserUI
 
             imgui->SeparatorText("Heat reset");
 
-            if (imgui->Button("Reset All Heat to Zero"))
+            const bool heatTools = WaveOptimiserFields::HeatTools.On();
+            if (!heatTools)
+                imgui->TextDisabled("Heat tools are off: the game update moved something they need");
+
+            if (heatTools && imgui->Button("Reset All Heat to Zero"))
                 HeatSampler::RequestResetAllHeat();
 
             imgui->SeparatorText("Heat sampler");
 
-            if (imgui->Button(HeatSampler::IsEnabled() ? "Stop sampling" : "Sample heat at cursor"))
+            if (heatTools && imgui->Button(HeatSampler::IsEnabled() ? "Stop sampling" : "Sample heat at cursor"))
                 HeatSampler::SetEnabled(!HeatSampler::IsEnabled());
 
-            if (HeatSampler::IsEnabled())
+            if (heatTools && HeatSampler::IsEnabled())
             {
                 const HeatSampler::Result result = HeatSampler::GetLastResult();
                 if (result.valid)

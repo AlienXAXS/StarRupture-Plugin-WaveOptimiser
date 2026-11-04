@@ -15,8 +15,8 @@ namespace WaveOptimiserSignatures
     // Stable across game updates because it lives in engine code, not game code.
     // Scan to get function start, add CallOffset to reach the call instruction,
     // resolve rel32 to get the UWorld::GetSubsystem<UMassEntitySubsystem> pointer.
-    // Call it with UWorld* (= UCrMassEnviroWaveSubsystem::OuterPrivate at +0x20)
-    // to get UMassEntitySubsystem*; FMassEntityManager* is then at [result + 0x38].
+    // Call it with UWorld* (= the UCrMassEnviroWaveSubsystem Outer)
+    // to get UMassEntitySubsystem*; FMassEntityManager* is then read through WaveOptimiserFields::EntityManager.
     static const char* GetSubsystemMassEntity_Fn =
         "48 89 5C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 41 56 48 83 EC ?? ?? ?? ?? 4C 8B F1 48 8B CA";
     static const size_t GetSubsystemMassEntity_CallOffset = 0x2F;
