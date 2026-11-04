@@ -38,6 +38,8 @@ Settings live in `Plugins\config\WaveOptimiser.ini`, created on first launch.
 
 ## Troubleshooting
 
+Found a bug? [Report it on GitHub](https://github.com/AlienXAXS/StarRupture-Plugin-WaveOptimiser/issues) and attach your `ModLoader.log` (in `<game>\StarRupture\Binaries\Win64\ModLoader\Logs\`).
+
 | Problem | Solution |
 |---|---|
 | Plugin not loading | Check `modloader.log` in `Binaries\Win64\` for errors. |
