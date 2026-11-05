@@ -54,7 +54,9 @@ namespace WaveOptimiserSignatures
     // different function (InternalGetConstSharedFragmentPtr) and surfaced as
     // "can't find the heat fragment" everywhere. A pattern on the function
     // itself has no offset to rot, and the map's row for this key is the same
-    // address (the loader refuses a pattern that disagrees with its row).
+    // address. On a build the map has an exact row for, the loader uses the
+    // row and only checks that this pattern is unique; where it has no exact
+    // row, it refuses a pattern that disagrees with the rows it does have.
     static const char* InternalGetFragmentDataPtr =
         "48 89 5C 24 ?? 48 89 74 24 ?? 48 89 54 24 ?? 57 48 83 EC 30 49 8B F0 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 84 C0 75 32 "
         "8B 44 24 4C 4C 8D 0D ?? ?? ?? ?? 89 44 24 28 48 8D 15 ?? ?? ?? ?? 41 B8 4A 07 00 00 89 5C 24 20 48 8D 0D ?? ?? ?? ?? "
