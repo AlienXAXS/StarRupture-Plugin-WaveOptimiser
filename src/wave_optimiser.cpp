@@ -63,8 +63,8 @@ namespace WaveOptimiser
         std::deque<QueuedEntity>  g_queue;
 
         // FMassEntityManager::InternalGetFragmentDataPtr - the generic fragment accessor
-        // underlying all GetFragmentDataPtr<T> template instantiations. Resolved via
-        // an xref in SynchronizeActorStateToMass. Null if not found.
+        // underlying all GetFragmentDataPtr<T> template instantiations. Resolved by
+        // its own pattern (wave_optimiser_signatures.h). Null if not found.
         // Signature: void*(FMassEntityManager*, FMassEntityHandle, const UScriptStruct*)
         typedef void* (__fastcall* GetFragmentDataPtr_t)(void* entityMgr, FMassEntityHandle handle, const void* fragStruct);
         GetFragmentDataPtr_t g_getFragmentDataPtr = nullptr;
@@ -630,9 +630,9 @@ namespace WaveOptimiser
         // the plugin loaded, which is what the old scan-at-init path did. The
         // loader still lists each miss for the user.
         g_addrAddEntitiesToWave = ResolveFunction(self, scanner,
-            "UCrWaveSubsystem::AddEntitiesToWave", WaveOptimiserSignatures::AddEntitiesToWave);
+            "UCrMassEnviroWaveSubsystem::AddEntitiesToWave", WaveOptimiserSignatures::AddEntitiesToWave);
         g_addrRemoveEntitiesFromWave = ResolveFunction(self, scanner,
-            "UCrWaveSubsystem::RemoveEntitiesFromWave", WaveOptimiserSignatures::RemoveEntitiesFromWave);
+            "UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave", WaveOptimiserSignatures::RemoveEntitiesFromWave);
 
 
         // Resolve GetSubsystem<UMassEntitySubsystem> for the heat-reset tool. The
@@ -658,9 +658,6 @@ namespace WaveOptimiser
         // overheated until something else re-tags them (in practice: the player
         // moving far enough to trigger OnWeatherRegionsChanged). Warn loudly,
         // because the failure mode is a slow-burn gameplay bug, not a crash.
-        //
-        // Resolved before InternalGetFragmentDataPtr below, which is derived from
-        // a call site inside it.
         uintptr_t addTempAddr = ResolveFunction(self, scanner,
             "UCrBuildingFunctionLibrary::AddTemperatureToEntity", WaveOptimiserSignatures::AddTemperatureToEntity);
         if (addTempAddr)
@@ -674,28 +671,12 @@ namespace WaveOptimiser
                 "Heated buildings will NOT cool down on their own (no FCrMassTemperatureUpdatingTag) until the "
                 "player moves enough to trigger a weather-region change.");
 
-        // Resolve FMassEntityManager::InternalGetFragmentDataPtr from the call to
-        // it inside AddTemperatureToEntity. Non-fatal - heat injection and reset
-        // button will be inert if missing. See the long note in
-        // wave_optimiser_signatures.h for why this is derived from a call site
-        // rather than scanned directly (its two neighbours are byte-identical,
-        // and one of them hard-asserts).
-        //
-        // The 0xE8 opcode check is load-bearing: without it a shifted offset
-        // yields a plausible-looking non-null pointer that passes every guard and
-        // faults only at call time, which is precisely how this broke before.
-        // FOLLOW_REL32 makes that check the loader's, so a shifted offset is a
-        // named failure in the report rather than a line in our log that nobody
-        // reads until something faults -- and the target gets the FUNCTION_START
-        // check on top, which the hand-rolled decode never did.
-        //
-        // This re-scans the AddTemperatureToEntity pattern rather than working
-        // from addTempAddr, because followRel32At is measured from the match.
-        // The scan cache makes the second pass free.
-        const uintptr_t fragmentDataPtr = ResolveCalleeOf(self, scanner,
-            "FMassEntityManager::InternalGetFragmentDataPtr",
-            WaveOptimiserSignatures::AddTemperatureToEntity,
-            static_cast<int32_t>(WaveOptimiserSignatures::InternalGetFragmentDataPtr_CallOffsetFromAddTemp));
+        // Resolve FMassEntityManager::InternalGetFragmentDataPtr. Non-fatal - heat
+        // injection and reset button will be inert if missing. See the note in
+        // wave_optimiser_signatures.h for how its pattern tells it apart from the
+        // two byte-near-identical neighbours, one of which hard-asserts.
+        const uintptr_t fragmentDataPtr = ResolveFunction(self, scanner,
+            "FMassEntityManager::InternalGetFragmentDataPtr", WaveOptimiserSignatures::InternalGetFragmentDataPtr);
         if (fragmentDataPtr)
         {
             g_getFragmentDataPtr = reinterpret_cast<GetFragmentDataPtr_t>(fragmentDataPtr);

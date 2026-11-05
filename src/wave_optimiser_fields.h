@@ -53,7 +53,7 @@ namespace WaveOptimiserFields
 	// tools reuse the batching side's entity manager, fragment lookup and heat
 	// member, so those keys sit in both lists. SignalEntities is shared too.
 	inline PluginMap::Feature WaveBatching{ "batching", "Rupture heat batching",
-		{ "UCrWaveSubsystem::AddEntitiesToWave", "UCrWaveSubsystem::RemoveEntitiesFromWave",
+		{ "UCrMassEnviroWaveSubsystem::AddEntitiesToWave", "UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave",
 		  "UWorld::GetSubsystem<UMassEntitySubsystem>", "UCrBuildingFunctionLibrary::AddTemperatureToEntity",
 		  "FMassEntityManager::InternalGetFragmentDataPtr", "FMassEntityManager::IsEntityValid",
 		  "UMassSignalSubsystem::SignalEntities", PluginMap::MassEntityManagerField.key,

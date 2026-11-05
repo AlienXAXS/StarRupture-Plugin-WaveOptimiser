@@ -1,0 +1,1 @@
+Game functions are now looked up through the loader's version map first, with the plugin's own byte patterns as the fallback
