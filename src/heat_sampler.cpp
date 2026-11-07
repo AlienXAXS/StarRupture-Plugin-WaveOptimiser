@@ -156,9 +156,11 @@ namespace HeatSampler
             if (!actor || !actorManager)
                 return handle;
 
-            alignas(8) uint8_t helperBuf[0x18] = {};
-            s_helperCtor(helperBuf, actor);
-            const uint64_t objectKey = WaveOptimiserFields::ActorKeyOf(helperBuf);
+            PluginMap::StructBuffer helper(WaveOptimiserFields::ReplicationHelperSize);
+            if (!helper)
+                return handle;
+            s_helperCtor(helper.Data(), actor);
+            const uint64_t objectKey = WaveOptimiserFields::ActorKeyOf(helper.Data());
 
             s_getEntityHandleFromActor(actorManager, &handle, objectKey);
             return handle;

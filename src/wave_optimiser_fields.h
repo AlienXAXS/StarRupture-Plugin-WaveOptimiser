@@ -30,11 +30,11 @@ namespace WaveOptimiserFields
 	// FMassActorFragment, reached the same way.
 	inline auto FragmentActor = WAVE_OPTIMISER_FIELD(FMassActorFragment, Actor);
 
-	// The game's own constructor fills a stack buffer of this struct and the
-	// actor's identity is read from it, so its size is checked on the running
-	// build.
+	// The game's own constructor fills a buffer of this struct and the actor's
+	// identity is read from it. The buffer is a PluginMap::StructBuffer of the
+	// size the running build reflects.
 	inline auto ReplicationHelperActor = WAVE_OPTIMISER_FIELD(FCrMassActorReplicationHelper, Actor);
-	inline auto ReplicationHelperSize  = SR_SIZE_CHECK(FCrMassActorReplicationHelper);
+	inline auto ReplicationHelperSize  = SR_SIZE(FCrMassActorReplicationHelper);
 
 	// UMassActorSubsystem::ActorManager is a TSharedPtr the Game-SDK folds into
 	// Pad_38 (not reflected), so there is no SDK name to take an offset from. A
