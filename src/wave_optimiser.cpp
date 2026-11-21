@@ -30,7 +30,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <climits>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -176,15 +175,21 @@ namespace WaveOptimiser
         uint64_t g_totalBatchesReplayed = 0;
         uint8_t  g_lastWaveType = 0;
 
-        // True while the detours queue and OnTick replays. False when config
-        // disables the plugin, or when the batching feature is off: the loader
-        // flips WaveBatching.on at run time when a server host switches the
-        // feature off or a version-map key goes missing. Read on whichever
-        // thread the game calls the detours from; the flag is a plain bool the
-        // loader writes.
-        bool BatchingActive()
+        // True when a detour hands the call straight to the original: config
+        // disables the plugin, or the batching feature is off (a server host or
+        // a version-map miss switched it off) and nothing is left waiting. While
+        // entries are still queued the detours keep queuing, so a later call
+        // cannot overtake an earlier one; OnTick replays the queue and calls
+        // pass through once it is empty. Read on whichever thread the game calls
+        // the detours from; the flag is a plain bool.
+        bool PassThrough()
         {
-            return WaveOptimiserFields::WaveBatching.On() && WaveOptimiserConfig::Config::IsEnabled();
+            if (!WaveOptimiserConfig::Config::IsEnabled())
+                return true;
+            if (WaveOptimiserFields::WaveBatching.On())
+                return false;
+            std::lock_guard<std::mutex> lock(g_statsMutex);
+            return g_queue.empty();
         }
 
         // Detour for UCrMassEnviroWaveSubsystem::AddEntitiesToWave. Copies the
@@ -209,10 +214,10 @@ namespace WaveOptimiser
             // stay installed either way (see PluginInit) purely so
             // g_cachedWaveSubsystem above and the entity-manager/fragment-ptr
             // resolution in Init() keep happening - that's what HeatSampler needs
-            // to keep working while batching is off. Nothing queued after this
-            // point: what was queued while the feature was on is replayed by
-            // OnTick (see FlushQueue).
-            if (!BatchingActive())
+            // to keep working while batching is off. What was queued while the
+            // feature was on is replayed by OnTick (see below); calls arriving
+            // meanwhile queue behind it so the order is kept.
+            if (PassThrough())
             {
                 g_original(thisPtr, entitiesToAdd, waveType);
                 return;
@@ -268,7 +273,7 @@ namespace WaveOptimiser
             // See the matching check in Detour_AddEntitiesToWave - pass through
             // unmodified when the plugin is disabled in config or the batching
             // feature is off.
-            if (!BatchingActive())
+            if (PassThrough())
             {
                 g_originalRemove(thisPtr, entitiesToRemove);
                 return;
@@ -735,7 +740,7 @@ namespace WaveOptimiser
     {
         if (!WaveOptimiserFields::WaveBatching.On())
         {
-            LOG_WARN("WaveOptimiser: rupture heat batching is off - the game update moved something it needs");
+            LOG_WARN("WaveOptimiser: rupture heat batching is off - not installing the hooks");
             return false;
         }
 
@@ -1078,27 +1083,26 @@ namespace WaveOptimiser
     }
 
     // The batching feature went off while entities were still queued. Nothing
-    // else drains them: the detours now pass straight through, so without this
-    // the heat of an in-flight wave would never be applied. Replays the whole
-    // queue once, with the same code OnTick uses, so an entity is applied
-    // exactly once: the detours no longer queue, and an entry leaves the queue
-    // before it is replayed. Game thread (OnTick).
-    static void FlushQueue()
+    // else would drain them, so the heat of an in-flight wave would never be
+    // applied. OnTick keeps replaying them, at the same per-tick rate and with
+    // the same code as while on, until the queue is empty; the detours then
+    // pass straight through. An entry leaves the queue before it is replayed,
+    // so each entity is applied exactly once. Game thread (OnTick).
+    static void DrainQueueWhileOff()
     {
         {
             std::lock_guard<std::mutex> lock(g_statsMutex);
             if (g_queue.empty())
                 return;
-            LOG_INFO("WaveOptimiser: rupture heat batching switched off - replaying %zu queued entities", g_queue.size());
         }
-        DrainQueue(INT_MAX);
+        DrainQueue(WaveOptimiserConfig::Config::GetMaxEntitiesPerTick());
     }
 
     void OnTick(float /*deltaSeconds*/)
     {
         if (!WaveOptimiserFields::WaveBatching.On())
         {
-            FlushQueue();
+            DrainQueueWhileOff();
             return;
         }
 

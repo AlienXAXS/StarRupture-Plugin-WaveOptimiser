@@ -26,8 +26,8 @@ Settings live in `Plugins\config\WaveOptimiser.ini`, created on first launch.
 
 A server host, or a game update the loader has no rows for yet, can switch one of the plugin's features off while the game runs. The plugin stops acting on it at that moment:
 
-- **Rupture heat batching** off: new wave calls go straight to the game and run as in the unmodified game. Entities still waiting in the queue are applied once, right away, so none are lost. Turning it back on starts batching again.
-- **Heat tools** off (Reset All Heat, heat under the cursor): the buttons do nothing, sampling stops, and a reset asked for earlier is dropped instead of firing when the tools come back.
+- **Rupture heat batching** off: new wave calls go straight to the game and run as in the unmodified game once the entities still waiting in the queue have been applied, a few per tick as usual, so none are lost. Turning it back on starts batching again.
+- **Heat tools** off (Reset All Heat, heat under the cursor): the buttons are hidden, sampling stops (and stays stopped when the tools return), and a reset asked for earlier is dropped instead of firing when the tools come back.
 
 Reloading or exiting the game still removes the plugin's hooks, whatever state a feature was in.
 
