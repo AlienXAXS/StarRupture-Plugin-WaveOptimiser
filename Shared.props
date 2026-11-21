@@ -6,8 +6,8 @@
        Override in CI via /p:GameSDKRoot=... /p:PluginSDKInclude=...
        ============================================================ -->
   <PropertyGroup>
-    <GameSDKRoot Condition="'$(GameSDKRoot)' == ''">..\..\StarRupture-Game-SDK</GameSDKRoot>
-    <PluginSDKInclude Condition="'$(PluginSDKInclude)' == ''">..\..\StarRupture-Plugin-SDK\include</PluginSDKInclude>
+    <GameSDKRoot Condition="'$(GameSDKRoot)' == ''">$(MSBuildThisFileDirectory)..\StarRupture-Game-SDK</GameSDKRoot>
+    <PluginSDKInclude Condition="'$(PluginSDKInclude)' == ''">$(MSBuildThisFileDirectory)..\StarRupture-Plugin-SDK\include</PluginSDKInclude>
   </PropertyGroup>
 
   <!-- ============================================================
@@ -16,7 +16,7 @@
        CoreUObject_functions.cpp and Engine_functions.cpp for the
        active configuration.
        ============================================================ -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
+  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
     <StarRuptureSDKSourceDir>$(GameSDKRoot)\Client\SDK\</StarRuptureSDKSourceDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release' Or '$(Configuration)' == 'Local SDK Server Debug' Or '$(Configuration)' == 'Local SDK Server Release'">
@@ -29,7 +29,7 @@
        builds. Includes both the top-level override headers and the
        generated SDK sub-directory headers.
        ============================================================ -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
+  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
     <StarRuptureSDKConfigDir>$(GameSDKRoot)\Client\;$(GameSDKRoot)\Client\SDK\</StarRuptureSDKConfigDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release' Or '$(Configuration)' == 'Local SDK Server Debug' Or '$(Configuration)' == 'Local SDK Server Release'">
@@ -44,10 +44,10 @@
          #elif defined(MODLOADER_SERVER_BUILD)  ...server-only code...
          #else                                  ...generic fallback...
          #endif
-       Plain Debug / Release follow the Client configurations, so they
-       never fall through to the Server SDK.
+       Plain Debug / Release solution configurations map to the Client
+       configurations (see the .sln).
        ============================================================ -->
-  <ItemDefinitionGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
+  <ItemDefinitionGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
     <ClCompile>
       <PreprocessorDefinitions>MODLOADER_CLIENT_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
