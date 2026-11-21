@@ -30,6 +30,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <climits>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -175,6 +176,17 @@ namespace WaveOptimiser
         uint64_t g_totalBatchesReplayed = 0;
         uint8_t  g_lastWaveType = 0;
 
+        // True while the detours queue and OnTick replays. False when config
+        // disables the plugin, or when the batching feature is off: the loader
+        // flips WaveBatching.on at run time when a server host switches the
+        // feature off or a version-map key goes missing. Read on whichever
+        // thread the game calls the detours from; the flag is a plain bool the
+        // loader writes.
+        bool BatchingActive()
+        {
+            return WaveOptimiserFields::WaveBatching.On() && WaveOptimiserConfig::Config::IsEnabled();
+        }
+
         // Detour for UCrMassEnviroWaveSubsystem::AddEntitiesToWave. Copies the
         // (potentially huge) incoming TSet's entity handles into our own queue
         // and returns immediately instead of running the original synchronous
@@ -189,14 +201,18 @@ namespace WaveOptimiser
             if (!g_cachedWaveSubsystem)
                 g_cachedWaveSubsystem = thisPtr;
 
-            // Config::IsEnabled() off means "run vanilla" - hand the original,
-            // unmodified TSet straight to the real function instead of queueing it,
-            // so the real wave is unaffected (useful for A/B-ing our heat values
-            // against the game's own). Hooks stay installed either way (see
-            // PluginInit) purely so g_cachedWaveSubsystem above and the
-            // entity-manager/fragment-ptr resolution in Init() keep happening -
-            // that's what HeatSampler needs to keep working while batching is off.
-            if (!WaveOptimiserConfig::Config::IsEnabled())
+            // Config::IsEnabled() off, or the batching feature off (the host or a
+            // version-map miss switched it off while the game runs), means "run
+            // vanilla" - hand the original, unmodified TSet straight to the real
+            // function instead of queueing it, so the real wave is unaffected
+            // (useful for A/B-ing our heat values against the game's own). Hooks
+            // stay installed either way (see PluginInit) purely so
+            // g_cachedWaveSubsystem above and the entity-manager/fragment-ptr
+            // resolution in Init() keep happening - that's what HeatSampler needs
+            // to keep working while batching is off. Nothing queued after this
+            // point: what was queued while the feature was on is replayed by
+            // OnTick (see FlushQueue).
+            if (!BatchingActive())
             {
                 g_original(thisPtr, entitiesToAdd, waveType);
                 return;
@@ -250,8 +266,9 @@ namespace WaveOptimiser
                 return;
 
             // See the matching check in Detour_AddEntitiesToWave - pass through
-            // unmodified when the plugin is disabled in config.
-            if (!WaveOptimiserConfig::Config::IsEnabled())
+            // unmodified when the plugin is disabled in config or the batching
+            // feature is off.
+            if (!BatchingActive())
             {
                 g_originalRemove(thisPtr, entitiesToRemove);
                 return;
@@ -782,6 +799,10 @@ namespace WaveOptimiser
 
     void Shutdown(IPluginSelf* self)
     {
+        // Gated on what Init installed (g_hook, g_hookRemove), never on the live
+        // WaveBatching flag: a host can switch the feature off after Init ran,
+        // and the detours must still come out before this DLL is freed. Touches
+        // no UObject, so any thread is fine.
         if (g_hook && self->hooks->Hooks)
         {
             self->hooks->Hooks->Remove(g_hook);
@@ -839,11 +860,10 @@ namespace WaveOptimiser
         g_cachedSignalSubsystem = nullptr;
     }
 
-    void OnTick(float /*deltaSeconds*/)
+    // Replays up to maxPerTick queued entities through the original engine
+    // functions (Remove) or applies their wave heat (Add). Game thread only.
+    static void DrainQueue(int maxPerTick)
     {
-        if (!WaveOptimiserFields::WaveBatching.On())
-            return;
-
         // Lazily resolve FMassEntityManager* — stable after the first wave fires
         // and g_cachedWaveSubsystem is populated by Detour_AddEntitiesToWave.
         if (!g_cachedEntityMgr && g_cachedWaveSubsystem)
@@ -870,7 +890,6 @@ namespace WaveOptimiser
             return;
         }
 
-        const int maxPerTick = WaveOptimiserConfig::Config::GetMaxEntitiesPerTick();
         int processed = 0;
 
         // Needed by SetEntityHeat below - resolved once per tick rather than per
@@ -1056,6 +1075,34 @@ namespace WaveOptimiser
 
         lock.unlock();
         FireTemperatureSignal(heatedHandles);
+    }
+
+    // The batching feature went off while entities were still queued. Nothing
+    // else drains them: the detours now pass straight through, so without this
+    // the heat of an in-flight wave would never be applied. Replays the whole
+    // queue once, with the same code OnTick uses, so an entity is applied
+    // exactly once: the detours no longer queue, and an entry leaves the queue
+    // before it is replayed. Game thread (OnTick).
+    static void FlushQueue()
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_statsMutex);
+            if (g_queue.empty())
+                return;
+            LOG_INFO("WaveOptimiser: rupture heat batching switched off - replaying %zu queued entities", g_queue.size());
+        }
+        DrainQueue(INT_MAX);
+    }
+
+    void OnTick(float /*deltaSeconds*/)
+    {
+        if (!WaveOptimiserFields::WaveBatching.On())
+        {
+            FlushQueue();
+            return;
+        }
+
+        DrainQueue(WaveOptimiserConfig::Config::GetMaxEntitiesPerTick());
     }
 
     Stats GetStats()

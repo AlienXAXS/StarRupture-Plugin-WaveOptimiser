@@ -300,7 +300,21 @@ namespace HeatSampler
 
     void OnTick(float /*deltaSeconds*/)
     {
-        if (!WaveOptimiserFields::HeatTools.On() || !s_helperCtor || !s_getEntityHandleFromActor)
+        // The feature went off (host switch or a version-map miss): stop acting
+        // and drop what was requested before, so a reset asked for while it was
+        // on cannot fire when it comes back.
+        if (!WaveOptimiserFields::HeatTools.On())
+        {
+            s_resetHeatPending.store(false);
+            if (s_enabled.exchange(false))
+            {
+                std::lock_guard<std::mutex> lock(s_resultMutex);
+                s_lastResult = {};
+            }
+            return;
+        }
+
+        if (!s_helperCtor || !s_getEntityHandleFromActor)
             return;
 
         UWorld* world = PluginSdkRuntime::GetWorld();
@@ -404,6 +418,10 @@ namespace HeatSampler
 
     void SetEnabled(bool enabled)
     {
+        // Sampling cannot be switched on while the heat tools are off.
+        if (enabled && !WaveOptimiserFields::HeatTools.On())
+            return;
+
         s_enabled.store(enabled);
         if (!enabled)
         {
@@ -422,6 +440,11 @@ namespace HeatSampler
 
     void RequestResetAllHeat()
     {
+        // Refused while the heat tools are off, so it cannot wait for them to
+        // come back.
+        if (!WaveOptimiserFields::HeatTools.On())
+            return;
+
         s_resetHeatPending.store(true);
     }
 
