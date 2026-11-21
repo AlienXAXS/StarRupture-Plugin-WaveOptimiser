@@ -16,10 +16,7 @@
        CoreUObject_functions.cpp and Engine_functions.cpp for the
        active configuration.
        ============================================================ -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release'">
-    <StarRuptureSDKSourceDir>$(GameSDKRoot)\Server\SDK\</StarRuptureSDKSourceDir>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
     <StarRuptureSDKSourceDir>$(GameSDKRoot)\Client\SDK\</StarRuptureSDKSourceDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release' Or '$(Configuration)' == 'Local SDK Server Debug' Or '$(Configuration)' == 'Local SDK Server Release'">
@@ -32,7 +29,7 @@
        builds. Includes both the top-level override headers and the
        generated SDK sub-directory headers.
        ============================================================ -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
     <StarRuptureSDKConfigDir>$(GameSDKRoot)\Client\;$(GameSDKRoot)\Client\SDK\</StarRuptureSDKConfigDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release' Or '$(Configuration)' == 'Local SDK Server Debug' Or '$(Configuration)' == 'Local SDK Server Release'">
@@ -47,10 +44,10 @@
          #elif defined(MODLOADER_SERVER_BUILD)  ...server-only code...
          #else                                  ...generic fallback...
          #endif
-       Legacy Debug / Release configurations get neither define,
-       matching the #else fallback documented in scan_patterns.h.
+       Plain Debug / Release follow the Client configurations, so they
+       never fall through to the Server SDK.
        ============================================================ -->
-  <ItemDefinitionGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
+  <ItemDefinitionGroup Condition="'$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release' Or '$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
     <ClCompile>
       <PreprocessorDefinitions>MODLOADER_CLIENT_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
@@ -87,14 +84,13 @@
 
   <!-- ============================================================
        PLUGIN_GAME_BUILT_CL
-       The game build (CL) the plugin's candidate rows are for. Pinned
-       here; a build passes /p:PluginGameBuiltCL=<CL> to override it.
-       PluginGameBuild.props (Plugin SDK) turns it into the define that
-       plugin_interface.h stores in PluginInfo::gameBuiltCL.
+       The game build (CL) the Game-SDK was generated from, read by
+       PluginGameBuild.props (Plugin SDK) from the build_cl.txt beside
+       the Client\ or Server\ SDK the configuration compiles against,
+       and stored in PluginInfo::gameBuiltCL by plugin_interface.h. It is
+       not pinned here, so it follows the headers actually used; a build
+       can still pass /p:PluginGameBuiltCL=<CL>.
        ============================================================ -->
-  <PropertyGroup>
-    <PluginGameBuiltCL Condition="'$(PluginGameBuiltCL)' == ''">127004</PluginGameBuiltCL>
-  </PropertyGroup>
   <Import Project="$(PluginSDKInclude)\..\PluginGameBuild.props"
           Condition="Exists('$(PluginSDKInclude)\..\PluginGameBuild.props')" />
 
