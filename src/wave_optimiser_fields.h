@@ -39,9 +39,11 @@ namespace WaveOptimiserFields
 	// UMassActorSubsystem::ActorManager is a TSharedPtr the Game-SDK folds into
 	// Pad_38 (not reflected), so there is no SDK name to take an offset from. A
 	// stale offset would read whatever now sits there, so on a build the loader
-	// has no row for, the plugin is refused instead. CL-127004: 0x38, 0x10
-	// bytes. The row below is this plugin's own until the loader's map carries
-	// it. The entity subsystem's manager is the SDK's PluginMap::MassEntityManagerField.
+	// has no row for, the feature using it is turned off instead. CL-127004:
+	// 0x38, 0x10 bytes. The loader's map holds this row per game build; the row
+	// below is CL-127004's, used when the map has none for the running build (a
+	// loader without the server rows, for one). The entity subsystem's manager
+	// is the SDK's PluginMap::MassEntityManagerField.
 	inline auto ActorManager = PluginField<PluginMap::SharedRef>{ { "UMassActorSubsystem::ActorManager",
 		"UMassActorSubsystem", "ActorManager", PLUGIN_FIELD_NATIVE, sizeof(PluginMap::SharedRef), 0x38 } };
 
