@@ -34,7 +34,7 @@ Settings live in `Plugins\config\WaveOptimiser.ini`, created on first launch.
 
 > **Requires [StarRupture-ModLoader](https://github.com/AlienXAXS/StarRupture-ModLoader) v1.25.0 or later** to be installed first.
 
-On a dedicated server, keep the mod loader up to date. It carries the version object map rows for each server build. On a server build it has no rows for, the plugin uses its own patterns.
+On a dedicated server, keep the mod loader up to date. It carries the version object map rows for each server build. On a server build it has no rows for, the plugin finds those values itself, as before.
 
 ---
 
