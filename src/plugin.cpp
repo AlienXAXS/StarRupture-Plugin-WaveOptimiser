@@ -33,7 +33,7 @@ static PluginInfo s_pluginInfo = {
 	MODLOADER_BUILD_TAG,
 	"AlienX",
 	"Optimises wave/horde spawning in StarRupture",
-	PLUGIN_INTERFACE_VERSION,
+	PLUGIN_DECLARED_INTERFACE,
 	WAVE_OPTIMISER_PLUGIN_TARGET,
 	PLUGIN_GAME_BUILT_CL,
 	PLUGIN_MAP_MIGRATED
