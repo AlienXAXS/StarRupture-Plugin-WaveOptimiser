@@ -37,7 +37,7 @@ namespace WaveOptimiserUI
             }
             else
             {
-                imgui->TextDisabled("Rupture heat batching is off (switched off by the server, or the game update moved something it needs)");
+                imgui->TextDisabled("Rupture heat batching is off: the game update moved something it needs");
             }
 
             std::snprintf(line, sizeof(line), "Last wave type: %u", static_cast<unsigned>(stats.lastWaveType));
@@ -60,7 +60,7 @@ namespace WaveOptimiserUI
 
             const bool heatTools = WaveOptimiserFields::HeatTools.On();
             if (!heatTools)
-                imgui->TextDisabled("Heat tools are off (switched off by the server, or the game update moved something they need)");
+                imgui->TextDisabled("Heat tools are off: the game update moved something they need");
 
             if (heatTools && imgui->Button("Reset All Heat to Zero"))
                 HeatSampler::RequestResetAllHeat();
