@@ -63,8 +63,8 @@ namespace WaveOptimiser
         std::deque<QueuedEntity>  g_queue;
 
         // FMassEntityManager::InternalGetFragmentDataPtr - the generic fragment accessor
-        // underlying all GetFragmentDataPtr<T> template instantiations. Resolved by
-        // its own pattern (wave_optimiser_signatures.h). Null if not found.
+        // underlying all GetFragmentDataPtr<T> template instantiations. Resolved from
+        // the version map (key pattern in wave_optimiser_signatures.h). Null if not found.
         // Signature: void*(FMassEntityManager*, FMassEntityHandle, const UScriptStruct*)
         typedef void* (__fastcall* GetFragmentDataPtr_t)(void* entityMgr, FMassEntityHandle handle, const void* fragStruct);
         GetFragmentDataPtr_t g_getFragmentDataPtr = nullptr;
@@ -611,7 +611,7 @@ namespace WaveOptimiser
         return true;
     }
 
-    // Resolved during OnPluginLoadHooks; 0 means the pattern missed on this build.
+    // Resolved during OnPluginLoadHooks; 0 means the version map has no row for this build.
     uintptr_t g_addrAddEntitiesToWave      = 0;
     uintptr_t g_addrRemoveEntitiesFromWave = 0;
 
@@ -696,8 +696,8 @@ namespace WaveOptimiser
 
         // Resolve FMassEntityManager::InternalGetFragmentDataPtr. Non-fatal - heat
         // injection and reset button will be inert if missing. See the note in
-        // wave_optimiser_signatures.h for how its pattern tells it apart from the
-        // two byte-near-identical neighbours, one of which hard-asserts.
+        // wave_optimiser_signatures.h for the near-identical neighbours, one of which
+        // hard-asserts.
         const uintptr_t fragmentDataPtr = ResolveFunction(self, scanner,
             "FMassEntityManager::InternalGetFragmentDataPtr", PLUGIN_MAP_PATTERN(WaveOptimiserSignatures::InternalGetFragmentDataPtr));
         if (fragmentDataPtr)

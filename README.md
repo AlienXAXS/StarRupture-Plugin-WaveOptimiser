@@ -54,7 +54,7 @@ Found a bug? [Report it on GitHub](https://github.com/AlienXAXS/StarRupture-Plug
 | Problem | Solution |
 |---|---|
 | Plugin not loading | Check `modloader.log` in `Binaries\Win64\` for errors. |
-| Game updated, plugin broken | The hook uses byte-pattern scanning. A game update may shift the patterns -- wait for a plugin update. |
+| Game updated, plugin broken | The plugin reads its game addresses from the loader's version object map. Update the loader, or wait for a plugin update if the map has no rows for the new build. |
 
 ---
 

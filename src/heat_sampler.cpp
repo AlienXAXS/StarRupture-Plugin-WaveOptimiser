@@ -231,10 +231,8 @@ namespace HeatSampler
     }
 
     // All three addresses are called directly, so each declares
-    // PLUGIN_SCAN_FUNCTION_START and the loader checks the match against the
-    // executable's exception directory before handing it back. Two of these
-    // patterns are short, ordinary prologues, which is exactly the shape that
-    // can match plausible bytes in the wrong function.
+    // PLUGIN_SCAN_FUNCTION_START and the loader checks the address against the
+    // executable's exception directory before handing it back.
     static uintptr_t ResolveFunction(IPluginSelf* self, IPluginHookScanner* scanner,
         const char* hookName, const char* pattern)
     {
