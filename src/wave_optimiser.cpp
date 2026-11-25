@@ -620,7 +620,8 @@ namespace WaveOptimiser
     // PLUGIN_SCAN_FUNCTION_START. The loader checks the match against the
     // executable's exception directory, which is what tells "the pattern
     // matched" apart from "the pattern matched the right function". The
-    // loader's map answers first; the pattern is this plugin's own fallback.
+    // loader's version object map answers; the pattern text is only for the CI
+    // key-source build (PLUGIN_MAP_PATTERN), and a shipped DLL carries none.
     static uintptr_t ResolveFunction(IPluginSelf* self, IPluginHookScanner* scanner,
         const char* hookName, const char* pattern)
     {
@@ -652,9 +653,9 @@ namespace WaveOptimiser
         // the plugin loaded, which is what the old scan-at-init path did. The
         // loader still lists each miss for the user.
         g_addrAddEntitiesToWave = ResolveFunction(self, scanner,
-            "UCrMassEnviroWaveSubsystem::AddEntitiesToWave", WaveOptimiserSignatures::AddEntitiesToWave);
+            "UCrMassEnviroWaveSubsystem::AddEntitiesToWave", PLUGIN_MAP_PATTERN(WaveOptimiserSignatures::AddEntitiesToWave));
         g_addrRemoveEntitiesFromWave = ResolveFunction(self, scanner,
-            "UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave", WaveOptimiserSignatures::RemoveEntitiesFromWave);
+            "UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave", PLUGIN_MAP_PATTERN(WaveOptimiserSignatures::RemoveEntitiesFromWave));
 
 
         // Resolve GetSubsystem<UMassEntitySubsystem> for the heat-reset tool. The
@@ -663,7 +664,7 @@ namespace WaveOptimiser
         // to read the displacement itself and trust whatever came back.
         const uintptr_t getSubsysAddr = ResolveCalleeOf(self, scanner,
             "UWorld::GetSubsystem<UMassEntitySubsystem>",
-            WaveOptimiserSignatures::GetSubsystemMassEntity_Fn,
+            PLUGIN_MAP_PATTERN(WaveOptimiserSignatures::GetSubsystemMassEntity_Fn),
             static_cast<int32_t>(WaveOptimiserSignatures::GetSubsystemMassEntity_CallOffset));
         if (getSubsysAddr)
         {
@@ -681,7 +682,7 @@ namespace WaveOptimiser
         // moving far enough to trigger OnWeatherRegionsChanged). Warn loudly,
         // because the failure mode is a slow-burn gameplay bug, not a crash.
         uintptr_t addTempAddr = ResolveFunction(self, scanner,
-            "UCrBuildingFunctionLibrary::AddTemperatureToEntity", WaveOptimiserSignatures::AddTemperatureToEntity);
+            "UCrBuildingFunctionLibrary::AddTemperatureToEntity", PLUGIN_MAP_PATTERN(WaveOptimiserSignatures::AddTemperatureToEntity));
         if (addTempAddr)
         {
             g_addTemperatureToEntity = reinterpret_cast<AddTemperatureToEntity_t>(addTempAddr);
@@ -698,7 +699,7 @@ namespace WaveOptimiser
         // wave_optimiser_signatures.h for how its pattern tells it apart from the
         // two byte-near-identical neighbours, one of which hard-asserts.
         const uintptr_t fragmentDataPtr = ResolveFunction(self, scanner,
-            "FMassEntityManager::InternalGetFragmentDataPtr", WaveOptimiserSignatures::InternalGetFragmentDataPtr);
+            "FMassEntityManager::InternalGetFragmentDataPtr", PLUGIN_MAP_PATTERN(WaveOptimiserSignatures::InternalGetFragmentDataPtr));
         if (fragmentDataPtr)
         {
             g_getFragmentDataPtr = reinterpret_cast<GetFragmentDataPtr_t>(fragmentDataPtr);
@@ -709,7 +710,7 @@ namespace WaveOptimiser
             LOG_WARN("WaveOptimiser: InternalGetFragmentDataPtr unresolved - heat injection and reset will be inert");
 
         uintptr_t isEntityValidAddr = ResolveFunction(self, scanner,
-            "FMassEntityManager::IsEntityValid", WaveOptimiserSignatures::IsEntityValid);
+            "FMassEntityManager::IsEntityValid", PLUGIN_MAP_PATTERN(WaveOptimiserSignatures::IsEntityValid));
         if (isEntityValidAddr)
         {
             g_isEntityValid = reinterpret_cast<IsEntityValid_t>(isEntityValidAddr);
@@ -724,7 +725,7 @@ namespace WaveOptimiser
         // tool does (see FireTemperatureSignal above). Non-fatal if missing: heat
         // injection still runs, it just won't refresh the temperature prompt.
         uintptr_t signalEntitiesAddr = ResolveFunction(self, scanner,
-            "UMassSignalSubsystem::SignalEntities", WaveOptimiserSignatures::SignalEntities);
+            "UMassSignalSubsystem::SignalEntities", PLUGIN_MAP_PATTERN(WaveOptimiserSignatures::SignalEntities));
         if (signalEntitiesAddr)
         {
             g_signalEntities = reinterpret_cast<SignalEntities_t>(signalEntitiesAddr);

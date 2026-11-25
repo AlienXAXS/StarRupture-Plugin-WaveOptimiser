@@ -156,7 +156,7 @@ namespace HeatSampler
             if (!actor || !actorManager)
                 return handle;
 
-            alignas(8) uint8_t helperBuf[0x18] = {};
+            alignas(8) uint8_t helperBuf[sizeof(SDK::FCrMassActorReplicationHelper)] = {};
             s_helperCtor(helperBuf, actor);
             const uint64_t objectKey = WaveOptimiserFields::ActorKeyOf(helperBuf);
 
@@ -252,8 +252,8 @@ namespace HeatSampler
         // AOB shared with WAILA plugin - FCrMassActorReplicationHelper ctor.
         uintptr_t addr = ResolveFunction(self, scanner,
             "FCrMassActorReplicationHelper::FCrMassActorReplicationHelper",
-            "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 33 ED "
-            "48 8D 05 ?? ?? ?? ?? ?? ?? ?? 48 8B DA");
+            PLUGIN_MAP_PATTERN("48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 33 ED "
+                "48 8D 05 ?? ?? ?? ?? ?? ?? ?? 48 8B DA"));
         if (addr)
         {
             s_helperCtor = reinterpret_cast<MassActorHelperCtor_t>(addr);
@@ -265,7 +265,7 @@ namespace HeatSampler
 
         uintptr_t entityFromActorAddr = ResolveFunction(self, scanner,
             "FMassActorManager::GetEntityHandleFromActor",
-            "4C 89 44 24 ?? 53 55 57 41 55 41 56 48 83 EC ?? 49 8B F8");
+            PLUGIN_MAP_PATTERN("4C 89 44 24 ?? 53 55 57 41 55 41 56 48 83 EC ?? 49 8B F8"));
         if (entityFromActorAddr)
         {
             s_getEntityHandleFromActor = reinterpret_cast<GetEntityHandleFromActor_t>(entityFromActorAddr);
@@ -276,7 +276,7 @@ namespace HeatSampler
             LOG_WARN("HeatSampler: FMassActorManager::GetEntityHandleFromActor unresolved - heat sampling inactive");
 
         uintptr_t signalEntitiesAddr = ResolveFunction(self, scanner,
-            "UMassSignalSubsystem::SignalEntities", WaveOptimiserSignatures::SignalEntities);
+            "UMassSignalSubsystem::SignalEntities", PLUGIN_MAP_PATTERN(WaveOptimiserSignatures::SignalEntities));
         if (signalEntitiesAddr)
         {
             s_signalEntities = reinterpret_cast<SignalEntities_t>(signalEntitiesAddr);

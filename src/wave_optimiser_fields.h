@@ -9,7 +9,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <iterator>
 
 // Every member of a game class the plugin reads, taken from the loader's map
 // for the running game build (see plugin_map.h). Resolved once in
@@ -37,17 +36,12 @@ namespace WaveOptimiserFields
 	inline auto ReplicationHelperSize  = SR_SIZE_CHECK(FCrMassActorReplicationHelper);
 
 	// UMassActorSubsystem::ActorManager is a TSharedPtr the Game-SDK folds into
-	// Pad_38 (not reflected), so there is no SDK name to take an offset from. A
-	// stale offset would read whatever now sits there, so on a build the loader
-	// has no row for, the plugin is refused instead. CL-127004: 0x38, 0x10
-	// bytes. The row below is this plugin's own until the loader's map carries
-	// it. The entity subsystem's manager is the SDK's PluginMap::MassEntityManagerField.
+	// Pad_38 (not reflected), so there is no SDK name to take an offset from. The
+	// loader's version object map holds the offset for each game build, and there
+	// is none here: a build with no row turns the features that need it off. The
+	// entity subsystem's manager is the SDK's PluginMap::MassEntityManagerField.
 	inline auto ActorManager = PluginField<PluginMap::SharedRef>{ { "UMassActorSubsystem::ActorManager",
-		"UMassActorSubsystem", "ActorManager", PLUGIN_FIELD_NATIVE, sizeof(PluginMap::SharedRef), 0x38 } };
-
-	inline const PluginFieldCandidate kActorManagerRows[] = {
-		{ 127004, 0x38, static_cast<uint32_t>(sizeof(PluginMap::SharedRef)), 0, nullptr },
-	};
+		"UMassActorSubsystem", "ActorManager", PLUGIN_FIELD_NATIVE, sizeof(PluginMap::SharedRef), -1 } };
 
 	// The parts of the plugin that can be off while the rest runs. The heat
 	// tools reuse the batching side's entity manager, fragment lookup and heat
@@ -80,10 +74,8 @@ namespace WaveOptimiserFields
 	inline bool Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
 	{
 		bool nativeOk = PluginMap::ResolveMassEntityManager(scanner, self);
-		nativeOk = PluginMap::ResolveField(scanner, self, ActorManager,
-			kActorManagerRows, static_cast<uint32_t>(std::size(kActorManagerRows))) && nativeOk;
 		return PluginMap::ResolveFields(scanner, self,
-			CurrentHeat, LastUpdateTime, FragmentActor,
+			ActorManager, CurrentHeat, LastUpdateTime, FragmentActor,
 			ReplicationHelperActor, ReplicationHelperSize) && nativeOk;
 	}
 

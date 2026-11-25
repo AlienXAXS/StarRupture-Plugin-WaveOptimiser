@@ -1,7 +1,9 @@
 #pragma once
 
 // AOB patterns for WaveOptimiser. Centralised here so a future game update
-// that shifts a function's prologue only requires touching one file.
+// that shifts a function's prologue only requires touching one file. They
+// are read by the CI key-source build only (PLUGIN_MAP_PATTERN); a shipped
+// DLL takes every address from the loader's version object map.
 namespace WaveOptimiserSignatures
 {
     // UCrMassEnviroWaveSubsystem::AddEntitiesToWave prologue. Confirmed
