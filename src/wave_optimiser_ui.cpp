@@ -17,34 +17,49 @@ namespace WaveOptimiserUI
         std::atomic<WidgetHandle> g_widget{ nullptr };
         std::atomic<bool>         g_shown{ false };
 
+        constexpr const char* kBatchingOff = "Rupture heat batching is turned off right now.";
+        constexpr const char* kHeatToolsOff = "Heat tools are turned off right now.";
+
+        // Draws a section's heading and opens its body, both greyed while its
+        // feature is off, with a line saying so. The caller calls EndDisabled
+        // after the body.
+        void BeginSection(IModLoaderImGui* imgui, const char* title, bool on, const char* offText)
+        {
+            imgui->BeginDisabled(!on);
+            imgui->SeparatorText(title);
+            imgui->EndDisabled();
+
+            if (!on)
+                imgui->TextDisabled(offText);
+
+            imgui->BeginDisabled(!on);
+        }
+
         void RenderWidget(IModLoaderImGui* imgui)
         {
-            if (!WaveOptimiserFields::WaveBatching.On() && !WaveOptimiserFields::HeatTools.On())
+            const bool batching = WaveOptimiserFields::WaveBatching.On();
+            const bool heatTools = WaveOptimiserFields::HeatTools.On();
+            if (!batching && !heatTools)
                 return;
 
             const WaveOptimiser::Stats stats = WaveOptimiser::GetStats();
 
-            imgui->SeparatorText("Hook status");
+            BeginSection(imgui, "Hook status", batching, kBatchingOff);
             imgui->Text(stats.hookInstalled ? "AddEntitiesToWave hook: installed" : "AddEntitiesToWave hook: NOT installed");
 
             if (!WaveOptimiserConfig::Config::IsEnabled())
                 imgui->TextDisabled("Plugin disabled in config - hooks are passing through unmodified (vanilla wave)");
 
-            imgui->SeparatorText("Live queue");
+            imgui->EndDisabled();
+
+            BeginSection(imgui, "Live queue", batching, kBatchingOff);
 
             char line[160];
             std::snprintf(line, sizeof(line), "Queue depth: %zu", stats.queueDepth);
             imgui->Text(line);
 
-            if (WaveOptimiserFields::WaveBatching.On())
-            {
-                std::snprintf(line, sizeof(line), "Max entities per tick: %d", WaveOptimiserConfig::Config::GetMaxEntitiesPerTick());
-                imgui->Text(line);
-            }
-            else
-            {
-                imgui->TextDisabled("Rupture heat batching is off: the game update moved something it needs");
-            }
+            std::snprintf(line, sizeof(line), "Max entities per tick: %d", WaveOptimiserConfig::Config::GetMaxEntitiesPerTick());
+            imgui->Text(line);
 
             std::snprintf(line, sizeof(line), "Last wave type: %u", static_cast<unsigned>(stats.lastWaveType));
             imgui->Text(line);
@@ -62,18 +77,18 @@ namespace WaveOptimiserUI
                 imgui->TextDisabled("No batch in progress");
             }
 
-            imgui->SeparatorText("Heat reset");
+            imgui->EndDisabled();
 
-            const bool heatTools = WaveOptimiserFields::HeatTools.On();
-            if (!heatTools)
-                imgui->TextDisabled("Heat tools are off: the game update moved something they need");
+            BeginSection(imgui, "Heat reset", heatTools, kHeatToolsOff);
 
-            if (heatTools && imgui->Button("Reset All Heat to Zero"))
+            if (imgui->Button("Reset All Heat to Zero"))
                 HeatSampler::RequestResetAllHeat();
 
-            imgui->SeparatorText("Heat sampler");
+            imgui->EndDisabled();
 
-            if (heatTools && imgui->Button(HeatSampler::IsEnabled() ? "Stop sampling" : "Sample heat at cursor"))
+            BeginSection(imgui, "Heat sampler", heatTools, kHeatToolsOff);
+
+            if (imgui->Button(HeatSampler::IsEnabled() ? "Stop sampling" : "Sample heat at cursor"))
                 HeatSampler::SetEnabled(!HeatSampler::IsEnabled());
 
             if (heatTools && HeatSampler::IsEnabled())
@@ -115,7 +130,9 @@ namespace WaveOptimiserUI
                     imgui->TextDisabled("Not looking at an actor");
             }
 
-            imgui->SeparatorText("Lifetime totals");
+            imgui->EndDisabled();
+
+            BeginSection(imgui, "Lifetime totals", batching, kBatchingOff);
 
             std::snprintf(line, sizeof(line), "Entities captured: %llu", static_cast<unsigned long long>(stats.totalCaptured));
             imgui->Text(line);
@@ -124,6 +141,8 @@ namespace WaveOptimiserUI
 
             std::snprintf(line, sizeof(line), "Batches replayed: %llu", static_cast<unsigned long long>(stats.totalBatchesReplayed));
             imgui->Text(line);
+
+            imgui->EndDisabled();
         }
 
         // Registers the widget on first use - cheap to call repeatedly, no-ops
