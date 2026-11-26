@@ -27,7 +27,7 @@ Settings live in `Plugins\config\WaveOptimiser.ini`, created on first launch.
 A game build the loader has no version object map rows for yet turns off the plugin's feature that needs them. The rest of the plugin keeps working:
 
 - **Rupture heat batching** off: new wave calls go straight to the game and run as in the unmodified game.
-- **Heat tools** off (Reset All Heat, heat under the cursor): the buttons are hidden and sampling does not run.
+- **Heat tools** off (Reset All Heat, heat under the cursor): the buttons are greyed out and sampling does not run.
 
 ---
 
