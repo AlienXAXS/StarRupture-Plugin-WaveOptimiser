@@ -739,12 +739,8 @@ namespace WaveOptimiser
 
     bool Init(IPluginSelf* self)
     {
-        if (!WaveOptimiserFields::WaveBatching.On())
-        {
-            LOG_WARN("WaveOptimiser: rupture heat batching is off - not installing the hooks");
-            return false;
-        }
-
+        // Installed even while batching is off: the detours pass through until it
+        // is on, and it can come on later without a reload.
         const uintptr_t addAddr = g_addrAddEntitiesToWave;
         if (!addAddr)
         {
