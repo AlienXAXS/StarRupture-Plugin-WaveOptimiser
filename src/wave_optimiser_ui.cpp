@@ -16,6 +16,9 @@ namespace WaveOptimiserUI
 
         void RenderWidget(IModLoaderImGui* imgui)
         {
+            if (!WaveOptimiserFields::WaveBatching.On() && !WaveOptimiserFields::HeatTools.On())
+                return;
+
             const WaveOptimiser::Stats stats = WaveOptimiser::GetStats();
 
             imgui->SeparatorText("Hook status");
