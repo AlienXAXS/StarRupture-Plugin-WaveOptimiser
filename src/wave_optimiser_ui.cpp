@@ -5,6 +5,7 @@
 #include "plugin_config.h"
 #include "wave_optimiser_fields.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -12,7 +13,9 @@ namespace WaveOptimiserUI
 {
     namespace
     {
-        WidgetHandle g_widget = nullptr;
+        // Written by the config callback, read on the tick.
+        std::atomic<WidgetHandle> g_widget{ nullptr };
+        std::atomic<bool>         g_shown{ false };
 
         void RenderWidget(IModLoaderImGui* imgui)
         {
@@ -138,11 +141,13 @@ namespace WaveOptimiserUI
             desc.renderFn = &RenderWidget;
             desc.windowHints = nullptr;
 
-            g_widget = self->hooks->UI->RegisterWidget(&desc);
-            if (g_widget)
+            const WidgetHandle widget = self->hooks->UI->RegisterWidget(&desc);
+            if (widget)
             {
                 LOG_INFO("WaveOptimiserUI: debug widget registered");
-                self->hooks->UI->SetWidgetVisible(g_widget, true);
+                self->hooks->UI->SetWidgetVisible(widget, true);
+                g_shown = true;
+                g_widget = widget;
             }
             else
                 LOG_WARN("WaveOptimiserUI: failed to register debug widget");
@@ -155,6 +160,20 @@ namespace WaveOptimiserUI
                 self->hooks->UI->UnregisterWidget(g_widget);
                 g_widget = nullptr;
             }
+        }
+
+        // Hides the whole window while both features are off, and shows it again
+        // when either comes back.
+        void OnTick(float /*deltaSeconds*/)
+        {
+            IPluginSelf* self = GetSelf();
+            const WidgetHandle widget = g_widget;
+            if (!self || !widget)
+                return;
+
+            const bool show = WaveOptimiserFields::WaveBatching.On() || WaveOptimiserFields::HeatTools.On();
+            if (g_shown.exchange(show) != show)
+                self->hooks->UI->SetWidgetVisible(widget, show);
         }
 
         // Fired whenever any plugin config value changes via the modloader UI -
@@ -189,6 +208,7 @@ namespace WaveOptimiserUI
         }
 
         self->hooks->UI->RegisterOnConfigChanged(self, &OnConfigChanged);
+        self->hooks->Engine->RegisterOnTick(&OnTick);
 
         if (WaveOptimiserConfig::Config::GetShowDebugPanel())
             EnsureRegistered(self);
@@ -199,7 +219,10 @@ namespace WaveOptimiserUI
     void Shutdown(IPluginSelf* self)
     {
         if (self->hooks->UI)
+        {
             self->hooks->UI->UnregisterOnConfigChanged(self, &OnConfigChanged);
+            self->hooks->Engine->UnregisterOnTick(&OnTick);
+        }
 
         Unregister(self);
     }
