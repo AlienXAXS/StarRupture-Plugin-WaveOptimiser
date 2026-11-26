@@ -298,17 +298,15 @@ namespace HeatSampler
 
     void OnTick(float /*deltaSeconds*/)
     {
-        // The feature went off (host switch or a version-map miss): stop acting
-        // and drop what was requested before, so a reset asked for while it was
-        // on cannot fire when it comes back.
+        // The feature went off (host switch or a version-map miss): stop acting,
+        // drop the last reading and any pending reset, so a reset asked for while
+        // it was on cannot fire when it comes back. The sampling toggle is the
+        // player's choice and is kept, so sampling resumes with the feature.
         if (!WaveOptimiserFields::HeatTools.On())
         {
             s_resetHeatPending.store(false);
-            if (s_enabled.exchange(false))
-            {
-                std::lock_guard<std::mutex> lock(s_resultMutex);
-                s_lastResult = {};
-            }
+            std::lock_guard<std::mutex> lock(s_resultMutex);
+            s_lastResult = {};
             return;
         }
 
