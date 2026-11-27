@@ -538,7 +538,7 @@ namespace WaveOptimiser
                     for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
                         if (!g_heatExcludedClasses[i])
                             LOG_INFO("WaveOptimiser: heat-excluded class '%s' not found in GObjects yet "
-                                "(not loaded, or misspelled) - will retry on next wave batch",
+                                "(not loaded, or misspelled) - will retry on the next drain",
                                 kHeatExcludedClassNames[i]);
                 }
                 s_lastUnresolvedCount = unresolved;
@@ -914,6 +914,11 @@ namespace WaveOptimiser
         // shared across all wave subsystem instances/wave types.
         std::vector<FMassEntityHandle> heatedHandles;
 
+        // Each lookup that is still missing searches the whole object list, so
+        // they run once per drain, not per batch: a whole-queue drain is many
+        // batches long and an unloaded class stays missing for all of them.
+        bool heatLookupsDone = false;
+
         std::unique_lock<std::mutex> lock(g_statsMutex);
 
         while (processed < maxPerTick && !g_queue.empty())
@@ -974,8 +979,12 @@ namespace WaveOptimiser
                     // one thing we must not skip is FCrMassTemperatureUpdatingTag,
                     // which SetEntityHeat below takes care of - without it the
                     // cooling processor never matches the entity at all.
-                    ResolveHeatExcludedClasses();
-                    ResolveFragmentStructs();
+                    if (!heatLookupsDone)
+                    {
+                        ResolveHeatExcludedClasses();
+                        ResolveFragmentStructs();
+                        heatLookupsDone = true;
+                    }
 
                     const bool canFilter = g_cachedEntityMgr
                         && g_getFragmentDataPtr
