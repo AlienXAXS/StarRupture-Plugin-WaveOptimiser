@@ -849,9 +849,11 @@ namespace WaveOptimiser
             return;
         }
 
-        if (g_queue.empty())
+        // The detours push under the lock, so the queue is read under it too.
         {
-            return;
+            std::lock_guard<std::mutex> lock(g_statsMutex);
+            if (g_queue.empty())
+                return;
         }
 
         int processed = 0;
