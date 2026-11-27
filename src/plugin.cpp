@@ -36,7 +36,9 @@ static PluginInfo s_pluginInfo = {
 	PLUGIN_DECLARED_INTERFACE,
 	WAVE_OPTIMISER_PLUGIN_TARGET,
 	PLUGIN_GAME_BUILT_CL,
-	PLUGIN_MAP_MIGRATED
+	// Both detours decide for themselves when to call straight through, and keep
+	// queuing while earlier calls wait so none is overtaken.
+	PLUGIN_MAP_MIGRATED | PLUGIN_HANDLES_HOST_DENY
 };
 
 // The wave queue and the cached FMassEntityManager/subsystem pointers are
