@@ -177,16 +177,14 @@ namespace WaveOptimiser
 
         // True when a detour hands the call straight to the original: config
         // disables the plugin, or the batching feature is off (a server host or
-        // a version-map miss switched it off) and nothing is left waiting. While
-        // entries are still queued the detours keep queuing, so a later call
-        // cannot overtake an earlier one; OnTick replays the queue and calls
-        // pass through once it is empty. Read on whichever thread the game calls
-        // the detours from; the flag is a plain bool.
+        // a version-map miss switched it off), and nothing is left waiting.
+        // While entries are still queued the detours keep queuing, so a later
+        // call cannot overtake an earlier one; OnTick replays the queue and
+        // calls pass through once it is empty. Read on whichever thread the game
+        // calls the detours from.
         bool PassThrough()
         {
-            if (!WaveOptimiserConfig::Config::IsEnabled())
-                return true;
-            if (WaveOptimiserFields::WaveBatching.On())
+            if (WaveOptimiserConfig::Config::IsEnabled() && WaveOptimiserFields::WaveBatching.On())
                 return false;
             std::lock_guard<std::mutex> lock(g_statsMutex);
             return g_queue.empty();
