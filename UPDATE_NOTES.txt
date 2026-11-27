@@ -1,3 +1,4 @@
 - Loads on ModLoader v1.23.0 and newer
 - Every game address and member offset now comes from the loader's version object map. On a game build the version map has no row for, the feature that needs it turns itself off
 - You can now install and update it from the mod loader's Browse list.
+- Turning WaveOptimiser off in its settings while wave work is still waiting now finishes all of it at once (a short pause is possible), then wave calls go straight to the game

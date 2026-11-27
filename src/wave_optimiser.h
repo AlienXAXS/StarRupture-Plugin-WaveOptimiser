@@ -26,6 +26,7 @@ namespace WaveOptimiser
     // Drains up to Config::GetMaxEntitiesPerTick() queued entities by replaying
     // them through the original engine functions in small batches, preserving
     // the original Add/Remove interleaving.
+    // While config or the batching feature is off, drains everything queued.
     void OnTick(float deltaSeconds);
 
     // Must be called when a world is about to end play. Drops the queue and
