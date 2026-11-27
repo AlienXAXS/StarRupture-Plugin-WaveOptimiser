@@ -28,6 +28,10 @@ IPluginSelf* GetSelf() { return g_self; }
 #error "WaveOptimiser must be built with either MODLOADER_SERVER_BUILD or MODLOADER_CLIENT_BUILD defined (see Shared.props)"
 #endif
 
+// The loader refuses a migrated plugin that names no game build, on every build.
+static_assert(PLUGIN_GAME_BUILT_CL != 0,
+	"No game build: use Game-SDK headers with build_cl.txt, or pass /p:PluginGameBuiltCL=<CL>");
+
 static PluginInfo s_pluginInfo = {
 	"WaveOptimiser",
 	MODLOADER_BUILD_TAG,
