@@ -4,6 +4,7 @@
 #include "wave_optimiser_fields.h"
 #include "plugin_helpers.h"
 #include "plugin_config.h"
+#include "object_ref.h"
 
 // Only needed for SDK::UObject/SDK::FWeakObjectPtr (actor name/class
 // diagnostics in OnTick's trace logging) - deliberately not `using namespace
@@ -50,7 +51,7 @@ namespace WaveOptimiser
         {
             FMassEntityHandle handle;
             uint8_t waveType; // only meaningful when op == Add
-            void* subsystem;
+            ObjectRef<SDK::UObject> subsystem; // the Remove replay calls into it
             WaveOp op;
         };
 
@@ -88,11 +89,10 @@ namespace WaveOptimiser
         typedef void* (__fastcall* GetSubsystemMassEntity_t)(void* world);
         GetSubsystemMassEntity_t g_getSubsystemFn = nullptr;
 
-        // Cached wave subsystem pointer — stable for the session lifetime.
-        // At reset time we read its Outer to get UWorld*, then call
-        // g_getSubsystemFn to reach UMassEntitySubsystem* and from there the
-        // entity manager.
-        void* g_cachedWaveSubsystem = nullptr;
+        // The wave subsystem the game last added entities through. Its Outer is
+        // the UWorld, which leads to the entity manager and the signal subsystem.
+        // Guarded by g_statsMutex.
+        ObjectRef<SDK::UObject> g_waveSubsystem;
 
         // UMassSignalSubsystem::SignalEntities - see the AOB comment in
         // wave_optimiser_signatures.h. Writing CurrentHeat directly (below) skips
@@ -108,10 +108,6 @@ namespace WaveOptimiser
         };
         typedef void(__fastcall* SignalEntities_t)(void* signalSubsystem, SDK::FName signalName, const ArrayViewMirror* entities);
         SignalEntities_t g_signalEntities = nullptr;
-
-        // Cached UMassSignalSubsystem* - resolved lazily the same way as
-        // g_cachedEntityMgr (both derive from the same UWorld*).
-        void* g_cachedSignalSubsystem = nullptr;
 
         // UCrBuildingFunctionLibrary::AddTemperatureToEntity - the game's own
         // heat-application primitive. Writes the clamped value *and* pushes
@@ -159,15 +155,11 @@ namespace WaveOptimiser
         };
         constexpr size_t kHeatExcludedClassCount = sizeof(kHeatExcludedClassNames) / sizeof(kHeatExcludedClassNames[0]);
 
-        // UClass* cache for the list above, resolved lazily via the SDK's
-        // FindClassFast (one GObjects scan per class per world) - reset on
-        // world teardown since BlueprintGeneratedClasses can be GC'd/reloaded.
-        SDK::UClass* g_heatExcludedClasses[kHeatExcludedClassCount] = {};
-        bool         g_heatExcludedClassesResolved = false;
-
-        // Cached FMassEntityManager* — derived once from the wave subsystem's outer
-        // UWorld and reused each tick for heat injection.
-        void* g_cachedEntityMgr = nullptr;
+        // The classes named above, found with the SDK's FindClassFast. A
+        // BlueprintGeneratedClass can be garbage collected, so each one is held
+        // as a checked reference and looked up again once it is gone. Also
+        // reset on world teardown.
+        ObjectRef<SDK::UClass> g_heatExcludedClasses[kHeatExcludedClassCount];
 
         // Lifetime/live counters backing GetStats() - see header for field meanings.
         size_t   g_currentBurstTotal = 0;
@@ -199,8 +191,12 @@ namespace WaveOptimiser
         // function in small batches across many ticks.
         void __fastcall Detour_AddEntitiesToWave(void* thisPtr, const MassEntitySet::ScriptSet* entitiesToAdd, uint8_t waveType)
         {
-            if (entitiesToAdd && !g_cachedWaveSubsystem)
-                g_cachedWaveSubsystem = thisPtr;
+            const ObjectRef<SDK::UObject> source(static_cast<SDK::UObject*>(thisPtr));
+            if (entitiesToAdd)
+            {
+                std::lock_guard<std::mutex> lock(g_statsMutex);
+                g_waveSubsystem = source;
+            }
 
             // Config::IsEnabled() off, or the batching feature off (the host or a
             // version-map miss switched it off while the game runs), means "run
@@ -208,9 +204,9 @@ namespace WaveOptimiser
             // function instead of queueing it, so the real wave is unaffected
             // (useful for A/B-ing our heat values against the game's own). Hooks
             // stay installed either way (see PluginInit) purely so
-            // g_cachedWaveSubsystem above and the entity-manager/fragment-ptr
-            // resolution in Init() keep happening - that's what HeatSampler needs
-            // to keep working while batching is off. What was still queued when
+            // g_waveSubsystem above and the fragment-ptr resolution in Init()
+            // keep happening - that's what HeatSampler needs to keep working
+            // while batching is off. What was still queued when
             // it was switched off is replayed by the next OnTick; calls arriving
             // before that queue behind it so the order is kept.
             if (PassThrough())
@@ -240,7 +236,7 @@ namespace WaveOptimiser
             {
                 if (bits[i / 32] & (1u << (i % 32)))
                 {
-                    g_queue.push_back({ elements[i].Value, waveType, thisPtr, WaveOp::Add });
+                    g_queue.push_back({ elements[i].Value, waveType, source, WaveOp::Add });
                     LOG_TRACE("WaveOptimiser: captured Add entity Index=%d SerialNumber=%d (wave type %u)",
                         elements[i].Value.Index, elements[i].Value.SerialNumber, static_cast<unsigned>(waveType));
                     ++captured;
@@ -294,7 +290,7 @@ namespace WaveOptimiser
             {
                 if (bits[i / 32] & (1u << (i % 32)))
                 {
-                    g_queue.push_back({ elements[i].Value, 0, thisPtr, WaveOp::Remove });
+                    g_queue.push_back({ elements[i].Value, 0, ObjectRef<SDK::UObject>(static_cast<SDK::UObject*>(thisPtr)), WaveOp::Remove });
                     LOG_TRACE("WaveOptimiser: captured Remove entity Index=%d SerialNumber=%d",
                         elements[i].Value.Index, elements[i].Value.SerialNumber);
                     ++captured;
@@ -326,21 +322,18 @@ namespace WaveOptimiser
 
     namespace
     {
-        // Reads Outer off the cached wave subsystem to get UWorld*.
-        // Shared by ResolveEntityManager() and the signal-subsystem resolution below.
+        // Reads Outer off the wave subsystem to get UWorld*. Null before the
+        // first wave, and once that subsystem is gone. Game thread, and not
+        // while g_statsMutex is held.
         void* ResolveWorld()
         {
-            if (!g_cachedWaveSubsystem)
-                return nullptr;
-            return static_cast<SDK::UObject*>(g_cachedWaveSubsystem)->Outer;
-        }
-
-        // Walks the cached subsystem pointer chain to reach FMassEntityManager*.
-        // Returns null if any pointer in the chain is missing.
-        void* ResolveEntityManager()
-        {
-            void* world = ResolveWorld();
-            return world ? ResolveEntityManagerFromWorld(world) : nullptr;
+            ObjectRef<SDK::UObject> waveSubsystem;
+            {
+                std::lock_guard<std::mutex> lock(g_statsMutex);
+                waveSubsystem = g_waveSubsystem;
+            }
+            SDK::UObject* live = waveSubsystem.Get();
+            return live ? live->Outer : nullptr;
         }
 
         // Builds a live FName from an ASCII config string - mirrors
@@ -376,14 +369,9 @@ namespace WaveOptimiser
             if (!g_signalEntities || handles.empty())
                 return;
 
-            if (!g_cachedSignalSubsystem)
-            {
-                void* world = ResolveWorld();
-                if (world)
-                    g_cachedSignalSubsystem = ResolveSignalSubsystem(world);
-            }
-
-            if (!g_cachedSignalSubsystem)
+            void* world = ResolveWorld();
+            void* signalSubsystem = world ? ResolveSignalSubsystem(world) : nullptr;
+            if (!signalSubsystem)
             {
                 LOG_TRACE("WaveOptimiser: heat signal skipped - UMassSignalSubsystem not resolved");
                 return;
@@ -391,7 +379,7 @@ namespace WaveOptimiser
 
             ArrayViewMirror view{ handles.data(), static_cast<int32_t>(handles.size()) };
             SDK::FName signalName = MakeFNameFromAscii(WaveOptimiserSignatures::TemperatureSignalName);
-            g_signalEntities(g_cachedSignalSubsystem, signalName, &view);
+            g_signalEntities(signalSubsystem, signalName, &view);
             LOG_TRACE("WaveOptimiser: signalled %zu entities with '%s' after wave heat injection",
                 handles.size(), WaveOptimiserSignatures::TemperatureSignalName);
         }
@@ -441,12 +429,12 @@ namespace WaveOptimiser
         // AddEntitiesToWave/RemoveEntitiesFromWave replay, but the *manager*
         // can still be stale (world torn down with entries queued), so the
         // lookup goes through the SEH guard above regardless.
-        std::string DescribeEntityActor(FMassEntityHandle handle)
+        std::string DescribeEntityActor(void* entityMgr, FMassEntityHandle handle)
         {
-            if (!g_cachedEntityMgr || !g_getFragmentDataPtr || !g_actorFragStruct)
+            if (!entityMgr || !g_getFragmentDataPtr || !g_actorFragStruct)
                 return "actor=<unresolved>";
 
-            void* fragData = GuardedGetFragmentDataPtr(g_cachedEntityMgr, handle, g_actorFragStruct);
+            void* fragData = GuardedGetFragmentDataPtr(entityMgr, handle, g_actorFragStruct);
             if (!fragData)
                 return "actor=<no FMassActorFragment>";
 
@@ -502,9 +490,6 @@ namespace WaveOptimiser
         // cause a wrongly-heated entity in the meantime).
         void ResolveHeatExcludedClasses()
         {
-            if (g_heatExcludedClassesResolved)
-                return;
-
             // Tracks how many slots were still null after the previous attempt,
             // so the "still unresolved" warning fires when the count changes
             // rather than spamming every replayed batch.
@@ -513,21 +498,21 @@ namespace WaveOptimiser
             size_t unresolved = 0;
             for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
             {
-                if (g_heatExcludedClasses[i])
+                if (g_heatExcludedClasses[i].Get())
                     continue;
-                g_heatExcludedClasses[i] = SDK::UObject::FindClassFast(kHeatExcludedClassNames[i]);
-                if (g_heatExcludedClasses[i])
+                SDK::UClass* found = SDK::UObject::FindClassFast(kHeatExcludedClassNames[i]);
+                g_heatExcludedClasses[i].Set(found);
+                if (found)
                     LOG_INFO("WaveOptimiser: heat-excluded class '%s' = 0x%llX",
                         kHeatExcludedClassNames[i],
-                        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_heatExcludedClasses[i])));
+                        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(found)));
                 else
                     ++unresolved;
             }
-            g_heatExcludedClassesResolved = (unresolved == 0);
 
             if (unresolved != s_lastUnresolvedCount)
             {
-                if (g_heatExcludedClassesResolved)
+                if (unresolved == 0)
                     LOG_INFO("WaveOptimiser: all %zu heat-excluded classes resolved", kHeatExcludedClassCount);
                 else
                 {
@@ -536,7 +521,7 @@ namespace WaveOptimiser
                     // to exclude - but list the names so a typo'd entry is
                     // visible instead of silently never matching.
                     for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
-                        if (!g_heatExcludedClasses[i])
+                        if (!g_heatExcludedClasses[i].Get())
                             LOG_INFO("WaveOptimiser: heat-excluded class '%s' not found in GObjects yet "
                                 "(not loaded, or misspelled) - will retry on the next drain",
                                 kHeatExcludedClassNames[i]);
@@ -549,14 +534,14 @@ namespace WaveOptimiser
         // (interior-only furnishing - vanilla never heats these). Entities whose
         // actor can't be resolved are treated as heatable (default allow), same
         // as vanilla would.
-        bool IsHeatExcludedEntity(FMassEntityHandle handle, const char** matchedName)
+        bool IsHeatExcludedEntity(void* entityMgr, FMassEntityHandle handle, const char** matchedName)
         {
             *matchedName = nullptr;
 
             if (!g_actorFragStruct)
                 return false;
 
-            void* fragData = GuardedGetFragmentDataPtr(g_cachedEntityMgr, handle, g_actorFragStruct);
+            void* fragData = GuardedGetFragmentDataPtr(entityMgr, handle, g_actorFragStruct);
             if (!fragData)
                 return false;
 
@@ -566,7 +551,8 @@ namespace WaveOptimiser
 
             for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
             {
-                if (g_heatExcludedClasses[i] && actor->IsA(g_heatExcludedClasses[i]))
+                SDK::UClass* excluded = g_heatExcludedClasses[i].Get();
+                if (excluded && actor->IsA(excluded))
                 {
                     *matchedName = kHeatExcludedClassNames[i];
                     return true;
@@ -576,17 +562,11 @@ namespace WaveOptimiser
         }
     }
 
-    bool SetEntityHeat(void* world, FMassEntityHandle handle, float targetHeat, float worldTimeSeconds)
+    bool SetEntityHeat(void* world, void* entityMgr, FMassEntityHandle handle, float targetHeat, float worldTimeSeconds)
     {
-        if (!g_addTemperatureToEntity || !world || !g_getFragmentDataPtr || !g_temperatureFragStruct)
-            return false;
-
-        // AddTemperatureToEntity finds the entity manager itself; we only need
-        // one to read the current heat for the delta below. Fall back to
-        // deriving it from the world so this still works before the first wave
-        // has populated g_cachedEntityMgr (the reset-all-heat tool's case).
-        void* entityMgr = g_cachedEntityMgr ? g_cachedEntityMgr : ResolveEntityManagerFromWorld(world);
-        if (!entityMgr)
+        // AddTemperatureToEntity finds the entity manager itself; ours is only
+        // used to read the current heat for the delta below.
+        if (!g_addTemperatureToEntity || !world || !entityMgr || !g_getFragmentDataPtr || !g_temperatureFragStruct)
             return false;
 
         // AddTemperatureToEntity adds rather than assigns, so read the current
@@ -827,14 +807,11 @@ namespace WaveOptimiser
         g_temperatureFragStruct = nullptr;
         g_isEntityValid = nullptr;
         g_getSubsystemFn = nullptr;
-        g_cachedWaveSubsystem = nullptr;
+        g_waveSubsystem.Reset();
         for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
-            g_heatExcludedClasses[i] = nullptr;
-        g_heatExcludedClassesResolved = false;
+            g_heatExcludedClasses[i].Reset();
         g_actorFragStruct = nullptr;
-        g_cachedEntityMgr = nullptr;
         g_signalEntities = nullptr;
-        g_cachedSignalSubsystem = nullptr;
         g_addTemperatureToEntity = nullptr;
     }
 
@@ -848,32 +825,18 @@ namespace WaveOptimiser
         g_queue.clear();
         g_currentBurstTotal = 0;
 
-        // World-scoped pointers - stale the moment the world ends. OnTick and
-        // Detour_AddEntitiesToWave re-resolve them lazily for the next world.
-        // The exclusion-class cache is dropped too: BlueprintGeneratedClasses
-        // can be GC'd on world unload; ResolveHeatExcludedClasses re-resolves
-        // them from GObjects on the next replayed Add batch.
+        // World-scoped references. Detour_AddEntitiesToWave records the next
+        // world's wave subsystem, and ResolveHeatExcludedClasses looks the
+        // classes up again on the next drain that applies heat.
         for (size_t i = 0; i < kHeatExcludedClassCount; ++i)
-            g_heatExcludedClasses[i] = nullptr;
-        g_heatExcludedClassesResolved = false;
-        g_cachedEntityMgr = nullptr;
-        g_cachedWaveSubsystem = nullptr;
-        g_cachedSignalSubsystem = nullptr;
+            g_heatExcludedClasses[i].Reset();
+        g_waveSubsystem.Reset();
     }
 
     // Replays up to maxPerTick queued entities through the original engine
     // functions (Remove) or applies their wave heat (Add). Game thread only.
     static void DrainQueue(int maxPerTick)
     {
-        // Lazily resolve FMassEntityManager* — stable after the first wave fires
-        // and g_cachedWaveSubsystem is populated by Detour_AddEntitiesToWave.
-        if (!g_cachedEntityMgr && g_cachedWaveSubsystem)
-        {
-            g_cachedEntityMgr = ResolveEntityManager();
-            LOG_TRACE("WaveOptimiser: OnTick lazily resolved entity manager -> %s",
-                g_cachedEntityMgr ? "ok" : "NULL (heat injection cannot run this tick)");
-        }
-
         if (!g_original)
         {
             LOG_TRACE("WaveOptimiser: OnTick abort - AddEntitiesToWave original function pointer not resolved (hook not installed)");
@@ -893,10 +856,11 @@ namespace WaveOptimiser
 
         int processed = 0;
 
-        // Needed by SetEntityHeat below - resolved once per tick rather than per
-        // entity. Null before the first wave populates g_cachedWaveSubsystem, in
-        // which case heat injection degrades to the direct-write fallback.
+        // Resolved once per drain rather than per entity, and never kept: the
+        // entity manager belongs to the world and goes away with it. Without
+        // one, heat injection is skipped.
         void* world = ResolveWorld();
+        void* const entityMgr = ResolveEntityManagerFromWorld(world);
 
         // GetTimeSeconds goes through UFUNCTION reflection, so it's sampled once
         // per tick and reused for every entity in every batch below. Sub-frame
@@ -924,7 +888,7 @@ namespace WaveOptimiser
         while (processed < maxPerTick && !g_queue.empty())
         {
             const QueuedEntity first = g_queue.front();
-            void* subsystem = first.subsystem;
+            const ObjectRef<SDK::UObject> source = first.subsystem;
             uint8_t waveType = first.waveType;
             WaveOp op = first.op;
 
@@ -938,7 +902,7 @@ namespace WaveOptimiser
             while (!g_queue.empty()
                 && processed < maxPerTick
                 && !batch.IsFull()
-                && g_queue.front().subsystem == subsystem
+                && g_queue.front().subsystem == source
                 && g_queue.front().op == op
                 && (op == WaveOp::Remove || g_queue.front().waveType == waveType))
             {
@@ -986,7 +950,7 @@ namespace WaveOptimiser
                         heatLookupsDone = true;
                     }
 
-                    const bool canFilter = g_cachedEntityMgr
+                    const bool canFilter = entityMgr
                         && g_getFragmentDataPtr
                         && g_temperatureFragStruct;
 
@@ -996,7 +960,7 @@ namespace WaveOptimiser
                     {
                         LOG_TRACE("WaveOptimiser: heat injection disabled this batch - entityMgr=%s "
                             "getFragmentDataPtr=%s tempFragStruct=%s",
-                            g_cachedEntityMgr ? "ok" : "NULL",
+                            entityMgr ? "ok" : "NULL",
                             g_getFragmentDataPtr ? "ok" : "NULL",
                             g_temperatureFragStruct ? "ok" : "NULL");
                     }
@@ -1010,25 +974,25 @@ namespace WaveOptimiser
                             LOG_TRACE("WaveOptimiser: Add entity Index=%d SerialNumber=%d (wave type %u) %s - "
                                 "heat injection skipped, prerequisites unresolved",
                                 handle.Index, handle.SerialNumber, static_cast<unsigned>(waveType),
-                                DescribeEntityActor(handle).c_str());
+                                DescribeEntityActor(entityMgr, handle).c_str());
                             continue;
                         }
 
                         const char* excludedAs = nullptr;
-                        if (IsHeatExcludedEntity(handle, &excludedAs))
+                        if (IsHeatExcludedEntity(entityMgr, handle, &excludedAs))
                         {
                             // LOG_INFO (not TRACE) so exclusion hits are visible at the
                             // default log level - the quickest way to confirm interior
                             // furnishings are being protected during a real wave.
                             LOG_INFO("WaveOptimiser: heat EXCLUDED - %s matched IsA(%s), interior-only furnishing "
                                 "(entity Index=%d SerialNumber=%d, wave type %u)",
-                                DescribeEntityActor(handle).c_str(), excludedAs,
+                                DescribeEntityActor(entityMgr, handle).c_str(), excludedAs,
                                 handle.Index, handle.SerialNumber, static_cast<unsigned>(waveType));
                             continue;
                         }
 
                         float* heat = WaveOptimiserFields::CurrentHeat.In(
-                            GuardedGetFragmentDataPtr(g_cachedEntityMgr, handle, g_temperatureFragStruct));
+                            GuardedGetFragmentDataPtr(entityMgr, handle, g_temperatureFragStruct));
                         if (heat)
                         {
                             const float before = *heat;
@@ -1039,7 +1003,7 @@ namespace WaveOptimiser
                             // will actually cool it back down afterwards. The direct
                             // write below is only a degraded fallback for when the
                             // signature didn't resolve - it heats but never cools.
-                            const bool tagged = SetEntityHeat(world, handle, kWaveHeat, worldTimeSeconds);
+                            const bool tagged = SetEntityHeat(world, entityMgr, handle, kWaveHeat, worldTimeSeconds);
                             if (!tagged)
                                 *heat = kWaveHeat;
 
@@ -1047,7 +1011,7 @@ namespace WaveOptimiser
                             LOG_TRACE("WaveOptimiser: Add entity Index=%d SerialNumber=%d (wave type %u) %s - "
                                 "CurrentHeat %.1f -> %.1f (%s)",
                                 handle.Index, handle.SerialNumber, static_cast<unsigned>(waveType),
-                                DescribeEntityActor(handle).c_str(), before, *heat,
+                                DescribeEntityActor(entityMgr, handle).c_str(), before, *heat,
                                 tagged ? "tagged for cooling" : "DIRECT WRITE, will not cool");
                         }
                         else
@@ -1055,11 +1019,11 @@ namespace WaveOptimiser
                             LOG_TRACE("WaveOptimiser: Add entity Index=%d SerialNumber=%d (wave type %u) %s - "
                                 "no CurrentHeat fragment, heat skipped",
                                 handle.Index, handle.SerialNumber, static_cast<unsigned>(waveType),
-                                DescribeEntityActor(handle).c_str());
+                                DescribeEntityActor(entityMgr, handle).c_str());
                         }
                     }
                 }
-                else
+                else if (SDK::UObject* subsystem = source.Get())
                 {
                     g_originalRemove(subsystem, batch.AsScriptSet());
 
@@ -1067,8 +1031,13 @@ namespace WaveOptimiser
                     {
                         FMassEntityHandle handle = batch.GetEntity(i);
                         LOG_TRACE("WaveOptimiser: Remove entity Index=%d SerialNumber=%d %s",
-                            handle.Index, handle.SerialNumber, DescribeEntityActor(handle).c_str());
+                            handle.Index, handle.SerialNumber, DescribeEntityActor(entityMgr, handle).c_str());
                     }
+                }
+                else
+                {
+                    // Its list of entities in the wave went with it.
+                    LOG_DEBUG("WaveOptimiser: wave subsystem is gone - %d queued removals dropped", batch.Count());
                 }
                 lock.lock();
 
@@ -1131,7 +1100,6 @@ namespace WaveOptimiser
     HeatQueryContext GetHeatQueryContext()
     {
         HeatQueryContext ctx{};
-        ctx.entityMgr    = g_cachedEntityMgr;
         ctx.getFragDataFn = reinterpret_cast<FragDataFn>(g_getFragmentDataPtr);
         ctx.tempStructPtr = g_temperatureFragStruct;
         return ctx;

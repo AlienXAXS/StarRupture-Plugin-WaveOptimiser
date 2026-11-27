@@ -52,19 +52,18 @@ namespace WaveOptimiser
     Stats GetStats();
 
     // Snapshot of the pointers needed to query FCrMassTemperatureFragment from outside
-    // this translation unit (e.g. HeatSampler). All fields are null until the first
-    // wave fires and g_cachedEntityMgr is resolved.
+    // this translation unit (e.g. HeatSampler). A field is null until the plugin
+    // has resolved it.
     using FragDataFn = void*(*)(void* entityMgr, FMassEntityHandle handle, const void* structPtr);
     struct HeatQueryContext
     {
-        void*      entityMgr;     // FMassEntityManager*
         FragDataFn getFragDataFn; // FMassEntityManager::InternalGetFragmentDataPtr
         void*      tempStructPtr; // FCrMassTemperatureFragment UScriptStruct*
     };
     HeatQueryContext GetHeatQueryContext();
 
-    // Resolves FMassEntityManager* directly from a UWorld* (as an opaque void*),
-    // bypassing the g_cachedWaveSubsystem lazy-init path used by OnTick/GetHeatQueryContext.
+    // Resolves FMassEntityManager* directly from a UWorld* (as an opaque void*).
+    // The result is good for the current tick only.
     // Available as soon as Init() has resolved GetSubsystem<UMassEntitySubsystem> -
     // does not require a wave to have fired yet. Returns null if that scan failed
     // or if massEntitySubsystem can't be reached for this world.
@@ -97,7 +96,7 @@ namespace WaveOptimiser
     // resolved, the world/handle is unusable, or the entity has no temperature
     // fragment - callers decide whether to fall back to a direct write (which
     // applies heat but forfeits cooling) or skip the entity entirely.
-    bool SetEntityHeat(void* world, FMassEntityHandle handle, float targetHeat, float worldTimeSeconds);
+    bool SetEntityHeat(void* world, void* entityMgr, FMassEntityHandle handle, float targetHeat, float worldTimeSeconds);
 
     // Checks whether a handle still refers to a live entity in the given entity
     // manager. Call before any fragment/tag lookup on a handle that wasn't just

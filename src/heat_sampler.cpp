@@ -199,7 +199,7 @@ namespace HeatSampler
                     // entity outside UCrMassTemperatureProcessor's query, so the
                     // rest of the temperature state never re-evaluates. Falls
                     // back to the direct write if the signature didn't resolve.
-                    if (!WaveOptimiser::SetEntityHeat(world, handle, 0.0f, worldTimeSeconds))
+                    if (!WaveOptimiser::SetEntityHeat(world, entityMgr, handle, 0.0f, worldTimeSeconds))
                         if (float* heat = WaveOptimiserFields::CurrentHeat.In(fragData))
                             *heat = 0.0f;
                     zeroedHandles.push_back(handle);
@@ -322,7 +322,7 @@ namespace HeatSampler
         if (s_resetHeatPending.exchange(false))
         {
             WaveOptimiser::HeatQueryContext resetCtx = WaveOptimiser::GetHeatQueryContext();
-            void* resetEntityMgr = resetCtx.entityMgr ? resetCtx.entityMgr : WaveOptimiser::ResolveEntityManagerFromWorld(world);
+            void* resetEntityMgr = WaveOptimiser::ResolveEntityManagerFromWorld(world);
             void* actorManager = ResolveActorManager(world);
             if (resetEntityMgr && resetCtx.getFragDataFn && resetCtx.tempStructPtr && actorManager)
                 PerformResetAllHeat(world, resetEntityMgr, resetCtx, actorManager);
@@ -334,7 +334,7 @@ namespace HeatSampler
             return;
 
         WaveOptimiser::HeatQueryContext ctx = WaveOptimiser::GetHeatQueryContext();
-        void* entityMgr = ctx.entityMgr ? ctx.entityMgr : WaveOptimiser::ResolveEntityManagerFromWorld(world);
+        void* entityMgr = WaveOptimiser::ResolveEntityManagerFromWorld(world);
         if (!entityMgr || !ctx.getFragDataFn || !ctx.tempStructPtr)
             return;
 
