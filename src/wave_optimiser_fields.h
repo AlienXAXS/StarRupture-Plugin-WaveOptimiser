@@ -55,8 +55,12 @@ namespace WaveOptimiserFields
 		  "FMassActorFragment::Actor" },
 		{ "WaveOptimiser.MaxEntitiesPerTick" } };
 	inline PluginMap::Feature HeatTools{ "heat-tools", "Heat reset and heat readout under the cursor",
-		{ "FCrMassActorReplicationHelper::FCrMassActorReplicationHelper",
-		  "FMassActorManager::GetEntityHandleFromActor", "UMassSignalSubsystem::SignalEntities",
+		{
+#ifdef MODLOADER_CLIENT_BUILD
+		  "FCrMassActorReplicationHelper::FCrMassActorReplicationHelper",
+		  "FMassActorManager::GetEntityHandleFromActor",
+#endif
+		  "UMassSignalSubsystem::SignalEntities",
 		  "UWorld::GetSubsystem<UMassEntitySubsystem>", "FMassEntityManager::InternalGetFragmentDataPtr",
 		  PluginMap::MassEntityManagerField.key, "UMassActorSubsystem::ActorManager",
 		  "FCrMassActorReplicationHelper::Actor", "FCrMassActorReplicationHelper",
