@@ -41,8 +41,8 @@ static PluginInfo s_pluginInfo = {
 	PLUGIN_MAP_MIGRATED | PLUGIN_HANDLES_HOST_DENY
 };
 
-// The wave queue and the cached FMassEntityManager/subsystem pointers are
-// world-scoped: replaying queued entities after their world tore down
+// The wave queue and the object references held with it are world-scoped:
+// replaying queued entities after their world tore down
 // hard-asserts inside FMassEntityManager (crash seen in the wild via
 // DescribeEntityActor). Drop everything before the world goes away.
 static void OnBeforeWorldEndPlay(SDK::UWorld* /*world*/, const char* worldName)

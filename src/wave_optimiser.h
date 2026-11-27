@@ -30,8 +30,8 @@ namespace WaveOptimiser
     void OnTick(float deltaSeconds);
 
     // Must be called when a world is about to end play. Drops the queue and
-    // every world-scoped cached pointer (entity manager, wave subsystem,
-    // signal subsystem) - replaying queued entities against a torn-down
+    // resets the world-scoped object references (wave subsystem, heat-excluded
+    // classes) - replaying queued entities against a torn-down
     // world's FMassEntityManager hard-asserts inside the engine
     // ("EntityStorageInterface without initialization") and crashes.
     void OnWorldTeardown();

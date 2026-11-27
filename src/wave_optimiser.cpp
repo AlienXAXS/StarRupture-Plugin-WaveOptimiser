@@ -762,15 +762,15 @@ namespace WaveOptimiser
         
 
         // Cache UScriptStruct* for the fragment types by name from GObjects.
-        // Both structs may not be registered yet this early; ResolveFragmentStructs
-        // is retried lazily from OnTick's Add branch until both resolve.
+        // Both structs may not be registered yet this early; a missing one is
+        // looked up again, once per queue drain, from OnTick's Add branch.
         ResolveFragmentStructs();
 
         // Resolve the heat-excluded UClass*es up front so their addresses are in
         // the log at startup rather than mid-wave. Classes not loaded yet (e.g.
         // if init happens before a save is loaded) stay null here and are
-        // retried by the lazy call in OnTick's Add branch - which is a no-op
-        // once everything is resolved.
+        // looked up again, once per queue drain, from OnTick's Add branch. A
+        // class that is still loaded is only re-checked, with no search.
         ResolveHeatExcludedClasses();
 
         LOG_INFO("WaveOptimiser: AddEntitiesToWave hooked at 0x%llX, RemoveEntitiesFromWave hooked at 0x%llX",
